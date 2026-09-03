@@ -10,7 +10,7 @@ const dateFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'n
 const dateTimeFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 
 type DataState = { stocks: TrackedStock[]; items: ScrapedItem[] }
-type FinvizTestResult = { status: 'success' | 'error'; data: unknown; message: string | null; code: string | null }
+type FinvizTestResult = { status: 'success' | 'error'; data: unknown; message: string | null; code: string | null; httpStatus: number | null; responseBody: string | null }
 
 function effectiveDate(item: ScrapedItem): number {
   return new Date(item.published_at ?? item.scraped_at).getTime()
@@ -174,31 +174,33 @@ function App() {
     setFinvizTestResult(null)
     const { data: currentSession } = await authenticatedSupabase.auth.getSession()
     if (!currentSession.session) {
-      setFinvizTestResult({ status: 'error', data: null, message: 'No authenticated session', code: 'SESSION_REQUIRED' })
+      setFinvizTestResult({ status: 'error', data: null, message: 'No authenticated session', code: 'SESSION_REQUIRED', httpStatus: null, responseBody: null })
       setFinvizTestBusy(false)
       return
     }
 
     try {
-      const { data, error } = await authenticatedSupabase.functions.invoke('scrape-finviz', { body: { ticker: 'KURA' } })
+      const { data, error } = await authenticatedSupabase.functions.invoke('scrape-finviz', { body: { ticker: 'AAPL' } })
       if (error) {
         const code = 'code' in error && typeof error.code === 'string' ? error.code : error.name || null
-        setFinvizTestResult({ status: 'error', data, message: error.message, code })
+        const response = error.context?.response
+        const responseBody = response ? await response.text() : null
+        setFinvizTestResult({ status: 'error', data, message: error.message, code, httpStatus: response?.status ?? null, responseBody })
       } else {
-        setFinvizTestResult({ status: 'success', data, message: null, code: null })
+        setFinvizTestResult({ status: 'success', data, message: null, code: null, httpStatus: null, responseBody: null })
       }
     } catch (testError) {
-      setFinvizTestResult({ status: 'error', data: null, message: testError instanceof Error ? testError.message : 'Finviz test failed', code: null })
+      setFinvizTestResult({ status: 'error', data: null, message: testError instanceof Error ? testError.message : 'Finviz test failed', code: null, httpStatus: null, responseBody: null })
     } finally {
       setFinvizTestBusy(false)
     }
   }
 
   return <div className="app-shell">
-    <header className="topbar"><div className="topbar-inner"><div className="wordmark"><span className="mini-mark"><BarChart3 size={16} /></span>Market Ledger</div><div className="user-menu"><CircleUserRound size={17} /><span>{session.user.email}</span><button className="test-button" onClick={() => void testKuraFinviz()} disabled={finvizTestBusy}>{finvizTestBusy ? 'Testing KURA...' : 'Test KURA Finviz'}</button><button title="Sign out" aria-label="Sign out" onClick={() => void authenticatedSupabase.auth.signOut()}><LogOut size={16} /></button></div></div></header>
+    <header className="topbar"><div className="topbar-inner"><div className="wordmark"><span className="mini-mark"><BarChart3 size={16} /></span>Market Ledger</div><div className="user-menu"><CircleUserRound size={17} /><span>{session.user.email}</span><button className="test-button" onClick={() => void testKuraFinviz()} disabled={finvizTestBusy}>{finvizTestBusy ? 'Testing AAPL...' : 'Test AAPL Finviz'}</button><button title="Sign out" aria-label="Sign out" onClick={() => void authenticatedSupabase.auth.signOut()}><LogOut size={16} /></button></div></div></header>
     <main className="content">
       <section className="page-heading"><div><p className="eyebrow">PORTFOLIO INTELLIGENCE</p><h1>Watchlist</h1><p className="muted">A focused view of the latest market signals.</p></div><button className="quiet-button" onClick={() => void loadData()} disabled={loading}><RefreshCw size={16} className={loading ? 'spin' : ''} />{loading ? 'Refreshing' : 'Refresh'}</button></section>
-      {finvizTestResult && <section className={`diagnostic-result ${finvizTestResult.status}`}><strong>{finvizTestResult.status === 'success' ? 'Success' : 'Error'}</strong>{finvizTestResult.message && <span>Message: {finvizTestResult.message}</span>}{finvizTestResult.code && <span>Code: {finvizTestResult.code}</span>}{finvizTestResult.data !== null && <pre>{JSON.stringify(finvizTestResult.data, null, 2)}</pre>}</section>}
+      {finvizTestResult && <section className={`diagnostic-result ${finvizTestResult.status}`}><strong>{finvizTestResult.status === 'success' ? 'Success' : 'Error'}</strong>{finvizTestResult.message && <span>Message: {finvizTestResult.message}</span>}{finvizTestResult.code && <span>Code: {finvizTestResult.code}</span>}{finvizTestResult.httpStatus !== null && <span>HTTP status: {finvizTestResult.httpStatus}</span>}{finvizTestResult.responseBody !== null && <span>Response body: {finvizTestResult.responseBody}</span>}{finvizTestResult.data !== null && <pre>{JSON.stringify(finvizTestResult.data, null, 2)}</pre>}</section>}
       <section className="watchlist-section"><div className="section-topline"><h2>Tracked tickers</h2><span className="counter">{data.stocks.length} active</span></div><div className="ticker-row">{data.stocks.map((stock) => <div key={stock.id} className={`ticker-card ${activeTicker === stock.ticker ? 'selected' : ''}`} role="button" tabIndex={0} onClick={() => setActiveTicker(stock.ticker)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setActiveTicker(stock.ticker) }}><button className="remove-ticker" title={`Remove ${stock.ticker}`} aria-label={`Remove ${stock.ticker}`} disabled={mutatingTicker !== null} onClick={(event) => { event.stopPropagation(); void removeTicker(stock.ticker) }}><Trash2 size={14} /></button><span className="ticker-symbol">{stock.ticker}</span><span className="ticker-name">{stock.company_name ?? 'Tracked security'}</span><span className="ticker-stats"><b>{summaries.get(stock.ticker)?.totalNews ?? 0}</b> news <b>{summaries.get(stock.ticker)?.totalPosts ?? 0}</b> posts</span><span className="ticker-updated">{summaries.get(stock.ticker)?.lastUpdated ? `Updated ${displayDate(summaries.get(stock.ticker)!.lastUpdated)}` : 'Awaiting first update'}</span><span className="card-accent" /></div>)}<form className="add-ticker" onSubmit={addTicker}><Search size={17} /><input placeholder="Add ticker" aria-label="Add ticker" value={tickerInput} onChange={(event) => setTickerInput(event.target.value)} /><button title="Add ticker" aria-label="Add ticker" disabled={!tickerInput.trim() || mutatingTicker !== null}><Plus size={18} /></button></form></div></section>
       {error && <div className="error-banner"><X size={17} />{error}</div>}
       <section className="feed-section"><div className="feed-header"><div><p className="eyebrow">MARKET FEED</p><h2>{activeTicker ?? 'Select a ticker'}</h2></div><div className="filters"><div className="segmented">{([['all', 'All'], ['news', 'News'], ['stocktwits', 'StockTwits']] as const).map(([value, label]) => <button key={value} className={filters.source === value ? 'active' : ''} onClick={() => setFilters({ ...filters, source: value })}>{label}</button>)}</div><select aria-label="Filter by time" value={filters.period} onChange={(event) => setFilters({ ...filters, period: event.target.value as MarketFeedFilters['period'] })}><option value="hour">Last hour</option><option value="today">Today</option><option value="three-days">3 days</option><option value="seven-days">7 days</option><option value="all">All time</option></select></div></div>

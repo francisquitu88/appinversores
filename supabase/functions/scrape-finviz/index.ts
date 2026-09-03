@@ -1,5 +1,5 @@
 import { finvizScraper } from './scraper.ts'
-import { assertTrackedTicker, saveFinvizScrapedItem } from '../_shared/repository.ts'
+import { assertTrackedTicker, saveFinvizScrapedItems } from '../_shared/repository.ts'
 import { errorResponse, handleOptions, ok, readJson } from '../_shared/response.ts'
 import { normalizeTicker } from '../_shared/scraper.ts'
 import { requireAuthenticatedUser } from '../_shared/supabase.ts'
@@ -24,8 +24,7 @@ Deno.serve(async (request) => {
     if (!ticker) return errorResponse('INVALID_TICKER', 'ticker must be a valid symbol such as NVDA', 400, request)
     await assertTrackedTicker(ticker)
     console.info(JSON.stringify({ event: 'scrape_started', source: 'finviz', ticker }))
-    const items = await finvizScraper.scrape({ ticker }); let newItems = 0; let duplicates = 0; let updated = 0
-    for (const item of items) { const result = await saveFinvizScrapedItem(item); if (result === 'new') newItems += 1; else if (result === 'updated') updated += 1; else duplicates += 1 }
+    const items = await finvizScraper.scrape({ ticker }); const persistence = await saveFinvizScrapedItems(items); const newItems = persistence.new; const duplicates = persistence.duplicate; const updated = persistence.updated
     const result = { source: 'finviz', ticker, found: items.length, new: newItems, duplicates, updated, durationMs: Date.now() - startedAt }
     console.info(JSON.stringify({ event: 'scrape_finished', ...result })); return ok(result, request)
   } catch (error) { const message = error instanceof Error ? error.message : ''; console.error(JSON.stringify({ event: 'scrape_failed', source: 'finviz', durationMs: Date.now() - startedAt, error: message || 'unknown error' })); if (message === 'TICKER_NOT_TRACKED') return errorResponse('TICKER_NOT_TRACKED', 'Ticker is not enabled in tracked_stocks', 404, request); if (message.includes('timed out')) return errorResponse('FIRECRAWL_TIMEOUT', 'The scraping provider timed out', 504, request); if (message.startsWith('Firecrawl')) return errorResponse('FIRECRAWL_ERROR', 'The scraping provider failed', 502, request); return errorResponse('SCRAPER_ERROR', 'Finviz scraper failed', 500, request) }

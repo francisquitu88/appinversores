@@ -126,6 +126,92 @@ function extractNewsRows(tableHtml: string): string[] {
   return [...tableHtml.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map((match) => match[1] ?? '').filter((rowHtml) => rowHtml.trim().length > 0)
 }
 
+function resolveDirectNewsUrls(html: string, baseUrl: string): string {
+  return html.replace(/(<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>[\s\S]*?<\/table>)/i, (tableHtml) => tableHtml.replace(/(\bhref\s*=\s*["'])([^"']+)(["'])/gi, (_match, prefix: string, href: string, suffix: string) => {
+    try {
+      return `${prefix}${new URL(href, baseUrl).toString()}${suffix}`
+    } catch {
+      return `${prefix}${href}${suffix}`
+    }
+  }))
+}
+
+function getDirectNewsDebug(html: string): { firstRawTimestamp: string | null; lastRawTimestamp: string | null; firstNewsTitle: string | null; lastNewsTitle: string | null } {
+  const tableMatch = html.match(/<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>[\s\S]*?<\/table>/i)
+  if (!tableMatch) return { firstRawTimestamp: null, lastRawTimestamp: null, firstNewsTitle: null, lastNewsTitle: null }
+
+  const seenUrls = new Set<string>()
+  const validRows = extractNewsRows(tableMatch[0]).map((row) => {
+    const cells = [...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((match) => match[1] ?? '')
+    if (cells.length < 2) return null
+    const articleLink = extractLinksFromCell(cells[1] ?? '')
+    const timestamp = normalizeText(decodeHtmlEntities((cells[0] ?? '').replace(/<[^>]+>/g, ' ')))
+    const title = normalizeText(articleLink.text)
+    const url = articleLink.href?.trim() ?? ''
+    if (!title || !url || seenUrls.has(url) || isKnownUiTitle(title) || looksLikeNumericTitle(title) || isNavigationUrl(url)) return null
+    try {
+      const parsedUrl = new URL(url)
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') return null
+    } catch {
+      return null
+    }
+    seenUrls.add(url)
+    return { timestamp, title }
+  }).filter((row): row is { timestamp: string | null; title: string } => row !== null)
+
+  const first = validRows[0] ?? null
+  const last = validRows[validRows.length - 1] ?? null
+  return {
+    firstRawTimestamp: first?.timestamp ?? null,
+    lastRawTimestamp: last?.timestamp ?? null,
+    firstNewsTitle: first?.title ?? null,
+    lastNewsTitle: last?.title ?? null,
+  }
+}
+
+function getInvalidUrlDebug(html: string): { rejectedInvalidUrlCount: number; examples: Array<{ href: string; title: string | null; timestamp: string | null; hrefIsAbsolute: boolean; hrefStartsWithSlash: boolean; hrefStartsWithHttp: boolean; hrefProtocol: string | null }> } {
+  const tableMatch = html.match(/<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>[\s\S]*?<\/table>/i)
+  if (!tableMatch) return { rejectedInvalidUrlCount: 0, examples: [] }
+
+  let rejectedInvalidUrlCount = 0
+  const examples: Array<{ href: string; title: string | null; timestamp: string | null; hrefIsAbsolute: boolean; hrefStartsWithSlash: boolean; hrefStartsWithHttp: boolean; hrefProtocol: string | null }> = []
+
+  for (const row of extractNewsRows(tableMatch[0])) {
+    const cells = [...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((match) => match[1] ?? '')
+    if (cells.length < 2) continue
+
+    const articleLink = extractLinksFromCell(cells[1] ?? '')
+    const timestamp = normalizeText(decodeHtmlEntities((cells[0] ?? '').replace(/<[^>]+>/g, ' ')))
+    const title = normalizeText(articleLink.text)
+    const href = articleLink.href ? articleLink.href.trim() : ''
+    if (!articleLink.href || !title || isKnownUiTitle(title) || looksLikeNumericTitle(title) || isNavigationUrl(href)) continue
+
+    let parsedUrl: URL | null = null
+    try {
+      parsedUrl = new URL(href)
+    } catch {
+      parsedUrl = null
+    }
+
+    if (parsedUrl && (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:')) continue
+
+    rejectedInvalidUrlCount += 1
+    if (examples.length < 5) {
+      examples.push({
+        href,
+        title,
+        timestamp,
+        hrefIsAbsolute: parsedUrl !== null,
+        hrefStartsWithSlash: href.startsWith('/'),
+        hrefStartsWithHttp: /^https?:\/\//i.test(href),
+        hrefProtocol: parsedUrl?.protocol ?? null,
+      })
+    }
+  }
+
+  return { rejectedInvalidUrlCount, examples }
+}
+
 const KNOWN_UI_TITLES = new Set([
   'overview',
   'short interest',
@@ -387,7 +473,7 @@ export const finvizScraper: Scraper = {
     const finvizUrl = `${FINVIZ_URL}${encodeURIComponent(requestedTicker)}`
     let items: ScrapedItemDraft[]
 
-    if (requestedTicker === 'KURA') {
+    if (requestedTicker === 'KURA' || requestedTicker === 'AAPL') {
       let directItems: ScrapedItemDraft[] = []
       let directStatus: number | null = null
       let directResponseUrl = finvizUrl
@@ -395,6 +481,12 @@ export const finvizScraper: Scraper = {
       let directContentType: string | null = null
       let directHtmlLength = 0
       let directNewsTableDetected = false
+      let directHtml = ''
+      let firstRawTimestamp: string | null = null
+      let lastRawTimestamp: string | null = null
+      let firstNewsTitle: string | null = null
+      let lastNewsTitle: string | null = null
+      let directRowsDetected = 0
 
       try {
         const controller = new AbortController()
@@ -419,28 +511,49 @@ export const finvizScraper: Scraper = {
         directResponseUrl = response.url
         directRedirected = response.redirected
         directContentType = response.headers.get('content-type')
-        const html = await response.text()
-        directHtmlLength = html.length
-        directNewsTableDetected = /<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>/i.test(html)
+        directHtml = await response.text()
+        directHtmlLength = directHtml.length
+        directNewsTableDetected = /<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>/i.test(directHtml)
+        const debugValues = getDirectNewsDebug(directHtml)
+        firstRawTimestamp = debugValues.firstRawTimestamp
+        lastRawTimestamp = debugValues.lastRawTimestamp
+        firstNewsTitle = debugValues.firstNewsTitle
+        lastNewsTitle = debugValues.lastNewsTitle
         if (response.ok && directContentType && /(?:text\/html|application\/xhtml\+xml)/i.test(directContentType) && directNewsTableDetected) {
-          directItems = extractNews({ html }, requestedTicker, sourceId)
+          directHtml = resolveDirectNewsUrls(directHtml, response.url)
+          const tableMatch = directHtml.match(/<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>[\s\S]*?<\/table>/i)
+          directRowsDetected = tableMatch ? extractNewsRows(tableMatch[0]).length : 0
+          directItems = extractNews({ html: directHtml }, requestedTicker, sourceId)
         }
       } catch {
         directItems = []
       }
 
-      console.info(JSON.stringify({
-        event: 'finviz_transport_test',
+      const invalidUrlDebug = getInvalidUrlDebug(directHtml)
+      console.log(JSON.stringify({
+        event: 'finviz_direct_debug',
         ticker: requestedTicker,
-        method: 'direct',
         status: directStatus,
         responseUrl: directResponseUrl,
         redirected: directRedirected,
         contentType: directContentType,
         htmlLength: directHtmlLength,
         newsTableDetected: directNewsTableDetected,
+        firstRawTimestamp,
+        lastRawTimestamp,
+        firstNewsTitle,
+        lastNewsTitle,
+        rowsDetected: directRowsDetected,
         validNewsRows: directItems.length,
-        itemsFound: directItems.length,
+        rejectedInvalidUrl: invalidUrlDebug.rejectedInvalidUrlCount,
+      }))
+
+      console.log(JSON.stringify({
+        event: 'finviz_url_debug',
+        ticker: requestedTicker,
+        responseUrl: directResponseUrl,
+        rejectedInvalidUrlCount: invalidUrlDebug.rejectedInvalidUrlCount,
+        examples: invalidUrlDebug.examples,
       }))
 
       if (directItems.length > 0) {
