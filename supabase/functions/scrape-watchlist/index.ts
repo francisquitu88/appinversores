@@ -5,6 +5,7 @@ import { saveFinvizScrapedItems, saveScrapedItem } from '../_shared/repository.t
 import { errorResponse, handleOptions, ok } from '../_shared/response.ts'
 
 const MAX_CONCURRENCY = 3
+const FIVE_MINUTES_MS = 5 * 60 * 1000
 let cycleRunning = false
 
 function isAuthorized(request: Request): boolean {
@@ -31,7 +32,7 @@ async function runFinviz(ticker: string) {
   }
 }
 
-async function runStockTwits(ticker: string) {
+async function runStockTwitsForTicker(ticker: string) {
   try {
     const items = await stockTwitsScraper.scrape({ ticker })
     let newItems = 0
@@ -46,11 +47,13 @@ async function runStockTwits(ticker: string) {
   }
 }
 
-async function scrapeTicker(ticker: string) {
+async function scrapeTicker(ticker: string, runStockTwits: boolean) {
   const startedAt = Date.now()
   const finviz = await runFinviz(ticker)
-  const stocktwits = await runStockTwits(ticker)
-  const result = { ticker, finviz, stocktwits, durationMs: Date.now() - startedAt }
+  const stocktwits = runStockTwits
+    ? await runStockTwitsForTicker(ticker)
+    : { ok: true, skipped: true, reason: '15m_interval' }
+  const result = { ticker, finviz, stocktwits, runStockTwits, durationMs: Date.now() - startedAt }
   console.info(JSON.stringify({ event: 'watchlist_ticker_finished', ...result }))
   return result
 }
@@ -65,6 +68,8 @@ Deno.serve(async (request) => {
   const startedAt = Date.now()
   cycleRunning = true
   try {
+    const cycleSlot = Math.floor(Date.now() / FIVE_MINUTES_MS)
+    const shouldRunStockTwits = cycleSlot % 3 === 0
     const { data, error } = await createBackendClient()
       .from('tracked_stocks')
       .select('ticker')
@@ -80,12 +85,12 @@ Deno.serve(async (request) => {
       while (nextIndex < tickers.length) {
         const index = nextIndex
         nextIndex += 1
-        results.push(await scrapeTicker(tickers[index]))
+        results.push(await scrapeTicker(tickers[index], shouldRunStockTwits))
       }
     }
 
     await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENCY, tickers.length) }, () => worker()))
-    const result = { source: 'watchlist', tickers: tickers.length, results, durationMs: Date.now() - startedAt }
+    const result = { source: 'watchlist', tickers: tickers.length, runStockTwits: shouldRunStockTwits, results, durationMs: Date.now() - startedAt }
     console.info(JSON.stringify({ event: 'watchlist_scrape_finished', ...result }))
     return ok(result, request)
   } catch (error) {
