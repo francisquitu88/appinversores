@@ -1,7 +1,7 @@
 import { finvizScraper } from '../scrape-finviz/scraper.ts'
 import { stockTwitsScraper } from '../scrape-stocktwits/scraper.ts'
 import { createBackendClient } from '../_shared/supabase.ts'
-import { saveFinvizScrapedItem, saveScrapedItem } from '../_shared/repository.ts'
+import { saveFinvizScrapedItems, saveScrapedItem } from '../_shared/repository.ts'
 import { errorResponse, handleOptions, ok } from '../_shared/response.ts'
 
 const MAX_CONCURRENCY = 3
@@ -24,16 +24,8 @@ function isAuthorized(request: Request): boolean {
 async function runFinviz(ticker: string) {
   try {
     const items = await finvizScraper.scrape({ ticker })
-    let newItems = 0
-    let duplicates = 0
-    let updated = 0
-    for (const item of items) {
-      const result = await saveFinvizScrapedItem(item)
-      if (result === 'new') newItems += 1
-      else if (result === 'updated') updated += 1
-      else duplicates += 1
-    }
-    return { ok: true, found: items.length, new: newItems, duplicates, updated }
+    const persistence = await saveFinvizScrapedItems(items)
+    return { ok: true, found: items.length, ...persistence }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : 'unknown error' }
   }

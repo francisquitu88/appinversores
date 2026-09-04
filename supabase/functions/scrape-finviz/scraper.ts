@@ -22,7 +22,6 @@ function normalizeText(value: string | null | undefined): string | null {
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-
   return cleaned.length > 0 ? cleaned : null
 }
 
@@ -37,12 +36,7 @@ function decodeHtmlEntities(value: string): string {
 }
 
 function getFinvizToday(): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: FINVIZ_TIME_ZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date())
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: FINVIZ_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date())
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
   return `${values.year}-${values.month}-${values.day}`
 }
@@ -50,43 +44,29 @@ function getFinvizToday(): string {
 function parseDateContext(rawDate: string): { year: number; month: number; day: number; value: string } | null {
   const match = rawDate.match(/^([A-Za-z]{3})-(\d{2})-(\d{2})$/i)
   if (!match) return null
-
   const [, monthName, dayText, yearText] = match
   const monthIndex = new Date(`${monthName} 1, 2000`).getMonth()
   const day = Number(dayText)
   const yearShort = Number(yearText)
   const year = yearShort >= 50 ? 1900 + yearShort : 2000 + yearShort
   const daysInMonth = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate()
-
   if (monthIndex < 0 || day < 1 || day > daysInMonth) return null
-
-  return {
-    year,
-    month: monthIndex + 1,
-    day,
-    value: `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
-  }
+  return { year, month: monthIndex + 1, day, value: `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}` }
 }
 
 function toIsoInFinvizTimeZone(dateContext: string, hour: number, minute: number): string | null {
   const dateMatch = dateContext.match(/^(\d{4})-(\d{2})-(\d{2})$/)
   if (!dateMatch || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null
-
   const [, yearText, monthText, dayText] = dateMatch
   const year = Number(yearText)
   const month = Number(monthText)
   const day = Number(dayText)
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate()
   if (month < 1 || month > 12 || day < 1 || day > daysInMonth) return null
-
   const wallClockUtc = Date.UTC(year, month - 1, day, hour, minute)
-  const offsetParts = new Intl.DateTimeFormat('en-US', {
-    timeZone: FINVIZ_TIME_ZONE,
-    timeZoneName: 'shortOffset',
-  }).formatToParts(new Date(wallClockUtc))
+  const offsetParts = new Intl.DateTimeFormat('en-US', { timeZone: FINVIZ_TIME_ZONE, timeZoneName: 'shortOffset' }).formatToParts(new Date(wallClockUtc))
   const offset = offsetParts.find((part) => part.type === 'timeZoneName')?.value.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?$/)
   if (!offset) return null
-
   const offsetMinutes = (Number(offset[2]) * 60 + Number(offset[3] ?? 0)) * (offset[1] === '-' ? -1 : 1)
   return new Date(wallClockUtc - offsetMinutes * 60_000).toISOString()
 }
@@ -94,7 +74,6 @@ function toIsoInFinvizTimeZone(dateContext: string, hour: number, minute: number
 export function parseFinvizTimestamp(rawValue: string | null, currentNewsDate: string | null): { published_at: string | null; rawTimestamp: string | null; currentNewsDate: string | null } {
   const normalized = normalizeText(rawValue)
   if (!normalized) return { published_at: null, rawTimestamp: null, currentNewsDate }
-
   const dateTimeMatch = normalized.match(/^([A-Za-z]{3}-\d{2}-\d{2})\s+(\d{1,2}):(\d{2})(AM|PM)$/i)
   if (dateTimeMatch) {
     const [, dateText, hoursText, minutesText, meridiem] = dateTimeMatch
@@ -103,22 +82,17 @@ export function parseFinvizTimestamp(rawValue: string | null, currentNewsDate: s
     const minutes = Number(minutesText)
     return { published_at: dateContext ? toIsoInFinvizTimeZone(dateContext.value, hours, minutes) : null, rawTimestamp: normalized, currentNewsDate: dateContext?.value ?? currentNewsDate }
   }
-
   const todayTimeMatch = normalized.match(/^Today\s+(\d{1,2}):(\d{2})(AM|PM)$/i)
   const timeOnlyMatch = normalized.match(/^(\d{1,2}):(\d{2})(AM|PM)$/i)
   const timeMatch = todayTimeMatch ?? timeOnlyMatch
   if (timeMatch) {
     const [, hoursText, minutesText, meridiem] = timeMatch
     const nextDate = todayTimeMatch ? currentNewsDate ?? getFinvizToday() : currentNewsDate
-    if (!nextDate) {
-      return { published_at: null, rawTimestamp: normalized, currentNewsDate: null }
-    }
-
+    if (!nextDate) return { published_at: null, rawTimestamp: normalized, currentNewsDate: null }
     const hours = Number(hoursText) % 12 + (meridiem.toUpperCase() === 'PM' ? 12 : 0)
     const minutes = Number(minutesText)
     return { published_at: toIsoInFinvizTimeZone(nextDate, hours, minutes), rawTimestamp: normalized, currentNewsDate: nextDate }
   }
-
   return { published_at: null, rawTimestamp: normalized, currentNewsDate }
 }
 
@@ -134,82 +108,6 @@ function resolveDirectNewsUrls(html: string, baseUrl: string): string {
       return `${prefix}${href}${suffix}`
     }
   }))
-}
-
-function getDirectNewsDebug(html: string): { firstRawTimestamp: string | null; lastRawTimestamp: string | null; firstNewsTitle: string | null; lastNewsTitle: string | null } {
-  const tableMatch = html.match(/<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>[\s\S]*?<\/table>/i)
-  if (!tableMatch) return { firstRawTimestamp: null, lastRawTimestamp: null, firstNewsTitle: null, lastNewsTitle: null }
-
-  const seenUrls = new Set<string>()
-  const validRows = extractNewsRows(tableMatch[0]).map((row) => {
-    const cells = [...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((match) => match[1] ?? '')
-    if (cells.length < 2) return null
-    const articleLink = extractLinksFromCell(cells[1] ?? '')
-    const timestamp = normalizeText(decodeHtmlEntities((cells[0] ?? '').replace(/<[^>]+>/g, ' ')))
-    const title = normalizeText(articleLink.text)
-    const url = articleLink.href?.trim() ?? ''
-    if (!title || !url || seenUrls.has(url) || isKnownUiTitle(title) || looksLikeNumericTitle(title) || isNavigationUrl(url)) return null
-    try {
-      const parsedUrl = new URL(url)
-      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') return null
-    } catch {
-      return null
-    }
-    seenUrls.add(url)
-    return { timestamp, title }
-  }).filter((row): row is { timestamp: string | null; title: string } => row !== null)
-
-  const first = validRows[0] ?? null
-  const last = validRows[validRows.length - 1] ?? null
-  return {
-    firstRawTimestamp: first?.timestamp ?? null,
-    lastRawTimestamp: last?.timestamp ?? null,
-    firstNewsTitle: first?.title ?? null,
-    lastNewsTitle: last?.title ?? null,
-  }
-}
-
-function getInvalidUrlDebug(html: string): { rejectedInvalidUrlCount: number; examples: Array<{ href: string; title: string | null; timestamp: string | null; hrefIsAbsolute: boolean; hrefStartsWithSlash: boolean; hrefStartsWithHttp: boolean; hrefProtocol: string | null }> } {
-  const tableMatch = html.match(/<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>[\s\S]*?<\/table>/i)
-  if (!tableMatch) return { rejectedInvalidUrlCount: 0, examples: [] }
-
-  let rejectedInvalidUrlCount = 0
-  const examples: Array<{ href: string; title: string | null; timestamp: string | null; hrefIsAbsolute: boolean; hrefStartsWithSlash: boolean; hrefStartsWithHttp: boolean; hrefProtocol: string | null }> = []
-
-  for (const row of extractNewsRows(tableMatch[0])) {
-    const cells = [...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((match) => match[1] ?? '')
-    if (cells.length < 2) continue
-
-    const articleLink = extractLinksFromCell(cells[1] ?? '')
-    const timestamp = normalizeText(decodeHtmlEntities((cells[0] ?? '').replace(/<[^>]+>/g, ' ')))
-    const title = normalizeText(articleLink.text)
-    const href = articleLink.href ? articleLink.href.trim() : ''
-    if (!articleLink.href || !title || isKnownUiTitle(title) || looksLikeNumericTitle(title) || isNavigationUrl(href)) continue
-
-    let parsedUrl: URL | null = null
-    try {
-      parsedUrl = new URL(href)
-    } catch {
-      parsedUrl = null
-    }
-
-    if (parsedUrl && (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:')) continue
-
-    rejectedInvalidUrlCount += 1
-    if (examples.length < 5) {
-      examples.push({
-        href,
-        title,
-        timestamp,
-        hrefIsAbsolute: parsedUrl !== null,
-        hrefStartsWithSlash: href.startsWith('/'),
-        hrefStartsWithHttp: /^https?:\/\//i.test(href),
-        hrefProtocol: parsedUrl?.protocol ?? null,
-      })
-    }
-  }
-
-  return { rejectedInvalidUrlCount, examples }
 }
 
 const KNOWN_UI_TITLES = new Set([
@@ -307,21 +205,7 @@ function extractNews(document: FirecrawlDocument, ticker: string, sourceId: stri
   if (!html || html.trim().length === 0) return []
 
   const tableMatch = html.match(/<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>[\s\S]*?<\/table>/i)
-  const allLinks = html.match(/<a\b[^>]*\shref\s*=\s*["'][^"']+["'][^>]*>/gi)?.length ?? 0
-  const tableLinks = tableMatch ? tableMatch[0].match(/<a\b[^>]*\shref\s*=\s*["'][^"']+["'][^>]*>/gi)?.length ?? 0 : 0
-  const ignoredNonNewsLinks = Math.max(0, allLinks - tableLinks)
-
   if (!tableMatch) {
-    console.info(JSON.stringify({
-      event: 'finviz_news_table_missing',
-      requestedTicker: ticker,
-      newsTableDetected: false,
-      newsTableTicker: null,
-      rowsDetected: 0,
-      validNewsRows: 0,
-      ignoredNonNewsLinks,
-      tickerMismatch: false,
-    }))
     return []
   }
 
@@ -331,37 +215,15 @@ function extractNews(document: FirecrawlDocument, ticker: string, sourceId: stri
   const rows = extractNewsRows(tableHtml).slice(0, FINVIZ_MAX_NEWS_ROWS)
 
   if (tableTicker && tableTicker !== ticker) {
-    console.warn(JSON.stringify({
-      event: 'finviz_ticker_mismatch',
-      requestedTicker: ticker,
-      tableTicker,
-    }))
-    console.info(JSON.stringify({
-      event: 'finviz_news_table_diagnostic',
-      requestedTicker: ticker,
-      newsTableDetected: true,
-      newsTableTicker: tableTicker,
-      rowsDetected: rows.length,
-      validNewsRows: 0,
-      ignoredNonNewsLinks,
-      tickerMismatch: true,
-    }))
     return []
   }
 
   const items: ScrapedItemDraft[] = []
   const seenUrls = new Set<string>()
   let currentNewsDate: string | null = getFinvizToday()
-  let rejectedRows = 0
-  let rejectedNavigation = 0
-  let rejectedInvalidUrl = 0
-  let rejectedEmptyTitle = 0
-  let rejectedNumericTitle = 0
-
   for (const row of rows) {
     const cellMatches = [...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((match) => match[1] ?? '')
     if (cellMatches.length < 2) {
-      rejectedRows += 1
       continue
     }
 
@@ -375,50 +237,35 @@ function extractNews(document: FirecrawlDocument, ticker: string, sourceId: stri
     const url = articleLink.href ? articleLink.href.trim() : ''
 
     if (!timestamp && !articleLink.href) {
-      rejectedRows += 1
       continue
     }
 
     if (!articleLink.href) {
-      rejectedRows += 1
       continue
     }
 
     if (!title) {
-      rejectedEmptyTitle += 1
-      rejectedRows += 1
       continue
     }
 
     if (isKnownUiTitle(title) || looksLikeNumericTitle(title)) {
-      if (looksLikeNumericTitle(title)) rejectedNumericTitle += 1
-      if (isKnownUiTitle(title)) rejectedNavigation += 1
-      rejectedRows += 1
       continue
     }
 
     if (isNavigationUrl(url)) {
-      rejectedNavigation += 1
-      rejectedRows += 1
       continue
     }
 
     try {
       const parsedUrl = new URL(url)
       if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-        rejectedInvalidUrl += 1
-        rejectedRows += 1
         continue
       }
     } catch {
-      rejectedInvalidUrl += 1
-      rejectedRows += 1
       continue
     }
 
     if (!title || seenUrls.has(url)) {
-      rejectedEmptyTitle += 1
-      rejectedRows += 1
       continue
     }
 
@@ -446,22 +293,6 @@ function extractNews(document: FirecrawlDocument, ticker: string, sourceId: stri
     })
   }
 
-  console.info(JSON.stringify({
-    event: 'finviz_news_table_diagnostic',
-    requestedTicker: ticker,
-    newsTableDetected: true,
-    newsTableTicker: tableTicker ?? ticker,
-    rowsDetected: rows.length,
-    validNewsRows: items.length,
-    rejectedRows,
-    rejectedNavigation,
-    rejectedInvalidUrl,
-    rejectedEmptyTitle,
-    rejectedNumericTitle,
-    ignoredNonNewsLinks,
-    tickerMismatch: false,
-  }))
-
   return items
 }
 
@@ -471,113 +302,51 @@ export const finvizScraper: Scraper = {
     const sourceId = await resolveSourceId('finviz')
     const requestedTicker = normalizeTicker(ticker) ?? ticker.toUpperCase()
     const finvizUrl = `${FINVIZ_URL}${encodeURIComponent(requestedTicker)}`
-    let items: ScrapedItemDraft[]
+    const startedAt = Date.now()
+    let items: ScrapedItemDraft[] = []
+    let directStatus: number | null = null
+    let directRows = 0
+    let directSucceeded = false
 
-    if (requestedTicker === 'KURA' || requestedTicker === 'AAPL') {
-      let directItems: ScrapedItemDraft[] = []
-      let directStatus: number | null = null
-      let directResponseUrl = finvizUrl
-      let directRedirected = false
-      let directContentType: string | null = null
-      let directHtmlLength = 0
-      let directNewsTableDetected = false
-      let directHtml = ''
-      let firstRawTimestamp: string | null = null
-      let lastRawTimestamp: string | null = null
-      let firstNewsTitle: string | null = null
-      let lastNewsTitle: string | null = null
-      let directRowsDetected = 0
-
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), KURA_DIRECT_FETCH_TIMEOUT_MS)
+      let response: Response
       try {
-        const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), KURA_DIRECT_FETCH_TIMEOUT_MS)
-        let response: Response
-
-        try {
-          response = await fetch(finvizUrl, {
-            headers: {
-              Accept: 'text/html,application/xhtml+xml',
-              'Accept-Language': 'en-US,en;q=0.9',
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36',
-            },
-            redirect: 'follow',
-            signal: controller.signal,
-          })
-        } finally {
-          clearTimeout(timeout)
-        }
-
-        directStatus = response.status
-        directResponseUrl = response.url
-        directRedirected = response.redirected
-        directContentType = response.headers.get('content-type')
-        directHtml = await response.text()
-        directHtmlLength = directHtml.length
-        directNewsTableDetected = /<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>/i.test(directHtml)
-        const debugValues = getDirectNewsDebug(directHtml)
-        firstRawTimestamp = debugValues.firstRawTimestamp
-        lastRawTimestamp = debugValues.lastRawTimestamp
-        firstNewsTitle = debugValues.firstNewsTitle
-        lastNewsTitle = debugValues.lastNewsTitle
-        if (response.ok && directContentType && /(?:text\/html|application\/xhtml\+xml)/i.test(directContentType) && directNewsTableDetected) {
-          directHtml = resolveDirectNewsUrls(directHtml, response.url)
-          const tableMatch = directHtml.match(/<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>[\s\S]*?<\/table>/i)
-          directRowsDetected = tableMatch ? extractNewsRows(tableMatch[0]).length : 0
-          directItems = extractNews({ html: directHtml }, requestedTicker, sourceId)
-        }
-      } catch {
-        directItems = []
+        response = await fetch(finvizUrl, {
+          headers: {
+            Accept: 'text/html,application/xhtml+xml',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36',
+          },
+          redirect: 'follow',
+          signal: controller.signal,
+        })
+      } finally {
+        clearTimeout(timeout)
       }
 
-      const invalidUrlDebug = getInvalidUrlDebug(directHtml)
-      console.log(JSON.stringify({
-        event: 'finviz_direct_debug',
-        ticker: requestedTicker,
-        status: directStatus,
-        responseUrl: directResponseUrl,
-        redirected: directRedirected,
-        contentType: directContentType,
-        htmlLength: directHtmlLength,
-        newsTableDetected: directNewsTableDetected,
-        firstRawTimestamp,
-        lastRawTimestamp,
-        firstNewsTitle,
-        lastNewsTitle,
-        rowsDetected: directRowsDetected,
-        validNewsRows: directItems.length,
-        rejectedInvalidUrl: invalidUrlDebug.rejectedInvalidUrlCount,
-      }))
-
-      console.log(JSON.stringify({
-        event: 'finviz_url_debug',
-        ticker: requestedTicker,
-        responseUrl: directResponseUrl,
-        rejectedInvalidUrlCount: invalidUrlDebug.rejectedInvalidUrlCount,
-        examples: invalidUrlDebug.examples,
-      }))
-
-      if (directItems.length > 0) {
-        items = directItems
-      } else {
-        const document = await createFirecrawlClient().scrape(finvizUrl)
-        items = extractNews(document, requestedTicker, sourceId)
-        console.info(JSON.stringify({
-          event: 'finviz_transport_test',
-          ticker: requestedTicker,
-          method: 'firecrawl',
-          status: null,
-          responseUrl: null,
-          redirected: false,
-          contentType: null,
-          htmlLength: document.html?.length ?? 0,
-          newsTableDetected: /<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>/i.test(document.html ?? ''),
-          validNewsRows: items.length,
-          itemsFound: items.length,
-        }))
+      directStatus = response.status
+      const contentType = response.headers.get('content-type')
+      const html = await response.text()
+      const newsTableDetected = /<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>/i.test(html)
+      if (response.ok && contentType && /(?:text\/html|application\/xhtml\+xml)/i.test(contentType) && newsTableDetected) {
+        const normalizedHtml = resolveDirectNewsUrls(html, response.url)
+        const tableMatch = normalizedHtml.match(/<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>[\s\S]*?<\/table>/i)
+        directRows = tableMatch ? extractNewsRows(tableMatch[0]).length : 0
+        items = extractNews({ html: normalizedHtml }, requestedTicker, sourceId)
+        directSucceeded = items.length > 0
       }
+    } catch {
+      directSucceeded = false
+    }
+
+    if (directSucceeded) {
+      console.info(JSON.stringify({ event: 'finviz_transport', ticker: requestedTicker, method: 'direct', status: directStatus, rows: directRows, items: items.length, durationMs: Date.now() - startedAt }))
     } else {
       const document = await createFirecrawlClient().scrape(finvizUrl)
       items = extractNews(document, requestedTicker, sourceId)
+      console.info(JSON.stringify({ event: 'finviz_transport', ticker: requestedTicker, method: 'firecrawl', reason: 'direct_fetch_failed', items: items.length, durationMs: Date.now() - startedAt }))
     }
 
     for (const item of items) {
