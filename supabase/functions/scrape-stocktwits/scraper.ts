@@ -312,7 +312,7 @@ export const stockTwitsScraper: Scraper = {
     const sourceId = await resolveSourceId('stocktwits')
     const normalizedTicker = normalizeTicker(ticker) ?? ticker.toUpperCase()
     const widgetUrl = buildWidgetUrl(normalizedTicker)
-    const firecrawlClient = createFirecrawlClient()
+    const firecrawlClient = createFirecrawlClient({ formats: ['html'] })
     const document = await firecrawlClient.scrape(widgetUrl)
     const html = document.html ?? document.markdown ?? ''
 

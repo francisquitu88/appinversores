@@ -2,6 +2,7 @@ const FIRECRAWL_URL = 'https://api.firecrawl.dev/v1/scrape'
 
 export interface FirecrawlDocument { markdown?: string; html?: string; metadata?: Record<string, unknown> }
 export interface FirecrawlClient { scrape(url: string): Promise<FirecrawlDocument> }
+export interface FirecrawlOptions { formats?: Array<'html' | 'markdown'> }
 
 function resolveFirecrawlApiKeys(): string[] {
   const configuredKeys = [
@@ -87,7 +88,7 @@ function getNewsTableDiagnostic(document: FirecrawlDocument) {
   }
 }
 
-async function fetchFirecrawlDocument(url: string, apiKey: string): Promise<FirecrawlDocument> {
+async function fetchFirecrawlDocument(url: string, apiKey: string, options?: FirecrawlOptions): Promise<FirecrawlDocument> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30_000)
 
@@ -97,7 +98,7 @@ async function fetchFirecrawlDocument(url: string, apiKey: string): Promise<Fire
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         url,
-        formats: ['markdown', 'html'],
+        formats: options?.formats ?? ['markdown', 'html'],
         onlyMainContent: true,
         maxAge: 0,
       }),
@@ -130,7 +131,7 @@ async function fetchFirecrawlDocument(url: string, apiKey: string): Promise<Fire
   }
 }
 
-export function createFirecrawlClient(): FirecrawlClient {
+export function createFirecrawlClient(options?: FirecrawlOptions): FirecrawlClient {
   const apiKeys = resolveFirecrawlApiKeys()
 
   return {
@@ -142,7 +143,7 @@ export function createFirecrawlClient(): FirecrawlClient {
         const isFallback = index > 0
 
         try {
-          return await fetchFirecrawlDocument(url, apiKey)
+          return await fetchFirecrawlDocument(url, apiKey, options)
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Firecrawl request failed'
           lastError = error instanceof Error ? error : new Error(message)

@@ -72,6 +72,7 @@ function App() {
   const [finvizTestBusy, setFinvizTestBusy] = useState(false)
   const [finvizTestResult, setFinvizTestResult] = useState<FinvizTestResult | null>(null)
   const refreshInFlight = useRef(false)
+  const refreshPending = useRef(false)
 
   useEffect(() => {
     if (!supabase) { setAuthLoading(false); return }
@@ -81,24 +82,45 @@ function App() {
   }, [])
 
   const loadData = useCallback(async (silent = false) => {
-    if (!supabase || !session || refreshInFlight.current) return
+    if (!supabase || !session) return
+    const client = supabase
+    if (refreshInFlight.current) {
+      refreshPending.current = true
+      return
+    }
     refreshInFlight.current = true
     if (!silent) setLoading(true)
     setError(null)
     try {
-      const [stocksResult, itemsResult] = await Promise.all([
-        supabase.from('tracked_stocks').select('id, ticker, company_name, enabled, created_at').eq('enabled', true).order('ticker'),
-        supabase.from('scraped_items').select('id, source_id, ticker, title, content, author, url, published_at, scraped_at, content_hash, metadata, created_at, item_type').order('published_at', { ascending: false, nullsFirst: false }).order('scraped_at', { ascending: false }),
-      ])
+      const stocksResult = await client.from('tracked_stocks').select('id, ticker, company_name, enabled, created_at').eq('enabled', true).order('ticker')
       if (stocksResult.error) throw stocksResult.error
-      if (itemsResult.error) throw itemsResult.error
-      setData({ stocks: (stocksResult.data ?? []) as TrackedStock[], items: (itemsResult.data ?? []) as ScrapedItem[] })
+      const stocks = (stocksResult.data ?? []) as TrackedStock[]
+      const itemSelect = 'id, source_id, ticker, title, content, author, url, published_at, scraped_at, content_hash, metadata, created_at, item_type'
+      const itemsByTicker = await Promise.all(stocks.map(async (stock) => {
+        const items: ScrapedItem[] = []
+        let rangeStart = 0
+        const pageSize = 1000
+        while (true) {
+          const itemsResult = await client.from('scraped_items').select(itemSelect).in('ticker', [stock.ticker]).order('published_at', { ascending: false, nullsFirst: false }).order('scraped_at', { ascending: false }).range(rangeStart, rangeStart + pageSize - 1)
+          if (itemsResult.error) throw itemsResult.error
+          const pageItems = (itemsResult.data ?? []) as ScrapedItem[]
+          items.push(...pageItems)
+          if (pageItems.length < pageSize) break
+          rangeStart += pageSize
+        }
+        return items
+      }))
+      setData({ stocks, items: itemsByTicker.flat() })
       setActiveTicker((current) => current && stocksResult.data?.some((stock) => stock.ticker === current) ? current : stocksResult.data?.[0]?.ticker ?? null)
     } catch {
       setError('Unable to load market data.')
     } finally {
       refreshInFlight.current = false
       setLoading(false)
+      if (refreshPending.current) {
+        refreshPending.current = false
+        void loadData(true)
+      }
     }
   }, [session])
 
@@ -117,7 +139,7 @@ function App() {
       const summary = byTicker.get(item.ticker)!
       if (item.item_type === 'news') summary.totalNews += 1
       if (item.item_type === 'post') summary.totalPosts += 1
-      if (!summary.lastUpdated || effectiveDate(item) > new Date(summary.lastUpdated).getTime()) summary.lastUpdated = item.published_at ?? item.scraped_at
+      if (!summary.lastUpdated || new Date(item.scraped_at).getTime() > new Date(summary.lastUpdated).getTime()) summary.lastUpdated = item.scraped_at
     })
     return byTicker
   }, [data])

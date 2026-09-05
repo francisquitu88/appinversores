@@ -6,6 +6,7 @@ import { errorResponse, handleOptions, ok } from '../_shared/response.ts'
 
 const MAX_CONCURRENCY = 3
 const FIVE_MINUTES_MS = 5 * 60 * 1000
+const FIFTEEN_MINUTES_MS = 15 * 60 * 1000
 let cycleRunning = false
 
 function isAuthorized(request: Request): boolean {
@@ -33,6 +34,7 @@ async function runFinviz(ticker: string) {
 }
 
 async function runStockTwitsForTicker(ticker: string) {
+  const startedAt = Date.now()
   try {
     const items = await stockTwitsScraper.scrape({ ticker })
     let newItems = 0
@@ -41,19 +43,23 @@ async function runStockTwitsForTicker(ticker: string) {
       if (await saveScrapedItem(item) === 'new') newItems += 1
       else duplicates += 1
     }
-    return { ok: true, found: items.length, new: newItems, duplicates }
+    const result = { ok: true, firecrawl_status: 'success', found: items.length, new: newItems, duplicate: duplicates, duplicates, duration_ms: Date.now() - startedAt }
+    console.info(JSON.stringify({ event: 'stocktwits_transport', ticker, ...result }))
+    return result
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : 'unknown error' }
+    const result = { ok: false, firecrawl_status: 'error', found: 0, new: 0, duplicate: 0, duplicates: 0, duration_ms: Date.now() - startedAt, error: error instanceof Error ? error.message : 'unknown error' }
+    console.info(JSON.stringify({ event: 'stocktwits_transport', ticker, ...result }))
+    return result
   }
 }
 
-async function scrapeTicker(ticker: string, runStockTwits: boolean) {
+async function scrapeTicker(ticker: string, runStockTwits: boolean, selectedStockTwitsTicker: string | null, rotationIndex: number, watchlistSize: number) {
   const startedAt = Date.now()
   const finviz = await runFinviz(ticker)
   const stocktwits = runStockTwits
     ? await runStockTwitsForTicker(ticker)
-    : { ok: true, skipped: true, reason: '15m_interval' }
-  const result = { ticker, finviz, stocktwits, runStockTwits, durationMs: Date.now() - startedAt }
+    : { ok: true, skipped: true, reason: '15m_interval', firecrawl_status: 'skipped', found: 0, new: 0, duplicate: 0, duration_ms: 0 }
+  const result = { ticker, finviz, stocktwits, runStockTwits, selectedStockTwitsTicker, rotationIndex, watchlistSize, durationMs: Date.now() - startedAt }
   console.info(JSON.stringify({ event: 'watchlist_ticker_finished', ...result }))
   return result
 }
@@ -78,6 +84,9 @@ Deno.serve(async (request) => {
     if (error) throw error
 
     const tickers = (data ?? []).map((row) => row.ticker)
+    const stockTwitsSlot = Math.floor(Date.now() / FIFTEEN_MINUTES_MS)
+    const rotationIndex = tickers.length > 0 ? stockTwitsSlot % tickers.length : -1
+    const selectedStockTwitsTicker = shouldRunStockTwits ? tickers[rotationIndex] ?? null : null
     const results: Awaited<ReturnType<typeof scrapeTicker>>[] = []
     let nextIndex = 0
 
@@ -85,12 +94,12 @@ Deno.serve(async (request) => {
       while (nextIndex < tickers.length) {
         const index = nextIndex
         nextIndex += 1
-        results.push(await scrapeTicker(tickers[index], shouldRunStockTwits))
+        results.push(await scrapeTicker(tickers[index], tickers[index] === selectedStockTwitsTicker, selectedStockTwitsTicker, rotationIndex, tickers.length))
       }
     }
 
     await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENCY, tickers.length) }, () => worker()))
-    const result = { source: 'watchlist', tickers: tickers.length, runStockTwits: shouldRunStockTwits, results, durationMs: Date.now() - startedAt }
+    const result = { source: 'watchlist', tickers: tickers.length, runStockTwits: shouldRunStockTwits, selectedStockTwitsTicker, rotationIndex, watchlistSize: tickers.length, results, durationMs: Date.now() - startedAt }
     console.info(JSON.stringify({ event: 'watchlist_scrape_finished', ...result }))
     return ok(result, request)
   } catch (error) {
