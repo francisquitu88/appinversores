@@ -1,7 +1,8 @@
 import { finvizScraper } from '../scrape-finviz/scraper.ts'
 import { stockTwitsScraper } from '../scrape-stocktwits/scraper.ts'
+import { scrapeSecFilings } from '../scrape-sec/scraper.ts'
 import { createBackendClient } from '../_shared/supabase.ts'
-import { saveFinvizScrapedItems, saveScrapedItem } from '../_shared/repository.ts'
+import { saveFinvizScrapedItems, saveScrapedItem, saveSecScrapedItems } from '../_shared/repository.ts'
 import { errorResponse, handleOptions, ok } from '../_shared/response.ts'
 
 const MAX_CONCURRENCY = 3
@@ -53,13 +54,30 @@ async function runStockTwitsForTicker(ticker: string) {
   }
 }
 
-async function scrapeTicker(ticker: string, runStockTwits: boolean, selectedStockTwitsTicker: string | null, rotationIndex: number, watchlistSize: number) {
+async function runSecForTicker(ticker: string, rotationIndex: number, watchlistSize: number) {
+  const startedAt = Date.now()
+  console.info(JSON.stringify({ event: 'sec_started', ticker, cik: null, selected: true, rotationIndex, watchlistSize }))
+  try {
+    const items = await scrapeSecFilings(ticker)
+    const persistence = await saveSecScrapedItems(items)
+    const result = { ok: true, found: items.length, ...persistence, rotationIndex, watchlistSize, duration_ms: Date.now() - startedAt }
+    console.info(JSON.stringify({ event: 'sec_finished', ticker, cik: items[0]?.metadata.cik ?? null, selected: true, ...result }))
+    return result
+  } catch (error) {
+    const result = { ok: false, found: 0, new: 0, duplicate: 0, rotationIndex, watchlistSize, duration_ms: Date.now() - startedAt, error: error instanceof Error ? error.message : 'unknown error' }
+    console.error(JSON.stringify({ event: 'sec_error', ticker, cik: null, selected: true, ...result }))
+    return result
+  }
+}
+
+async function scrapeTicker(ticker: string, runStockTwits: boolean, selectedStockTwitsTicker: string | null, runSec: boolean, selectedSecTicker: string | null, rotationIndex: number, watchlistSize: number) {
   const startedAt = Date.now()
   const finviz = await runFinviz(ticker)
   const stocktwits = runStockTwits
     ? await runStockTwitsForTicker(ticker)
     : { ok: true, skipped: true, reason: '15m_interval', firecrawl_status: 'skipped', found: 0, new: 0, duplicate: 0, duration_ms: 0 }
-  const result = { ticker, finviz, stocktwits, runStockTwits, selectedStockTwitsTicker, rotationIndex, watchlistSize, durationMs: Date.now() - startedAt }
+  const sec = runSec ? await runSecForTicker(ticker, rotationIndex, watchlistSize) : { ok: true, skipped: true, reason: '15m_interval', found: 0, new: 0, duplicate: 0, duration_ms: 0 }
+  const result = { ticker, finviz, stocktwits, sec, runStockTwits, selectedStockTwitsTicker, runSec, selectedSecTicker, rotationIndex, watchlistSize, durationMs: Date.now() - startedAt }
   console.info(JSON.stringify({ event: 'watchlist_ticker_finished', ...result }))
   return result
 }
@@ -87,6 +105,7 @@ Deno.serve(async (request) => {
     const stockTwitsSlot = Math.floor(Date.now() / FIFTEEN_MINUTES_MS)
     const rotationIndex = tickers.length > 0 ? stockTwitsSlot % tickers.length : -1
     const selectedStockTwitsTicker = shouldRunStockTwits ? tickers[rotationIndex] ?? null : null
+    const selectedSecTicker = shouldRunStockTwits ? tickers[rotationIndex] ?? null : null
     const results: Awaited<ReturnType<typeof scrapeTicker>>[] = []
     let nextIndex = 0
 
@@ -94,12 +113,12 @@ Deno.serve(async (request) => {
       while (nextIndex < tickers.length) {
         const index = nextIndex
         nextIndex += 1
-        results.push(await scrapeTicker(tickers[index], tickers[index] === selectedStockTwitsTicker, selectedStockTwitsTicker, rotationIndex, tickers.length))
+        results.push(await scrapeTicker(tickers[index], tickers[index] === selectedStockTwitsTicker, selectedStockTwitsTicker, tickers[index] === selectedSecTicker, selectedSecTicker, rotationIndex, tickers.length))
       }
     }
 
     await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENCY, tickers.length) }, () => worker()))
-    const result = { source: 'watchlist', tickers: tickers.length, runStockTwits: shouldRunStockTwits, selectedStockTwitsTicker, rotationIndex, watchlistSize: tickers.length, results, durationMs: Date.now() - startedAt }
+    const result = { source: 'watchlist', tickers: tickers.length, runStockTwits: shouldRunStockTwits, selectedStockTwitsTicker, selectedSecTicker, rotationIndex, watchlistSize: tickers.length, results, durationMs: Date.now() - startedAt }
     console.info(JSON.stringify({ event: 'watchlist_scrape_finished', ...result }))
     return ok(result, request)
   } catch (error) {
