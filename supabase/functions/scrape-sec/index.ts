@@ -18,14 +18,18 @@ Deno.serve(async (request) => {
     if (!ticker) return errorResponse('INVALID_TICKER', 'ticker must be a valid symbol such as NVDA', 400, request)
     await assertTrackedTicker(ticker)
     console.info(JSON.stringify({ event: 'sec_started', ticker }))
-    const items = await scrapeSecFilings(ticker)
-    const persistence = await saveSecScrapedItems(items)
-    const result = { source: 'SEC', ticker, found: items.length, ...persistence, duration_ms: Date.now() - startedAt }
+    const scrape = await scrapeSecFilings(ticker)
+    const persistence = await saveSecScrapedItems(scrape.items)
+    const result = {
+      source: 'SEC', ticker, found: scrape.items.length, cutoffDate: scrape.cutoffDate,
+      historicalSkipped: scrape.historicalSkipped, totalCandidates: scrape.totalCandidates,
+      ...persistence, duration_ms: Date.now() - startedAt,
+    }
     console.info(JSON.stringify({ event: 'sec_finished', ...result }))
     return ok(result, request)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'unknown error'
-    const result = { source: 'SEC', ticker, found: 0, new: 0, duplicate: 0, duration_ms: Date.now() - startedAt, error: message }
+    const result = { source: 'SEC', ticker, found: 0, new: 0, duplicate: 0, newInserted: 0, existingSkipped: 0, historicalSkipped: 0, totalCandidates: 0, duration_ms: Date.now() - startedAt, error: message }
     console.error(JSON.stringify({ event: 'sec_error', ...result }))
     if (message === 'AUTHORIZATION_REQUIRED' || message === 'INVALID_ACCESS_TOKEN') return errorResponse('UNAUTHORIZED', 'A valid Supabase access token is required', 401, request)
     if (message === 'BACKEND_CONFIG_MISSING') return errorResponse('BACKEND_CONFIG_MISSING', 'Supabase backend configuration is missing', 500, request)

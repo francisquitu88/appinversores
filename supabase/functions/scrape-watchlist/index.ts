@@ -58,10 +58,20 @@ async function runSecForTicker(ticker: string, rotationIndex: number, watchlistS
   const startedAt = Date.now()
   console.info(JSON.stringify({ event: 'sec_started', ticker, cik: null, selected: true, rotationIndex, watchlistSize }))
   try {
-    const items = await scrapeSecFilings(ticker)
-    const persistence = await saveSecScrapedItems(items)
-    const result = { ok: true, found: items.length, ...persistence, rotationIndex, watchlistSize, duration_ms: Date.now() - startedAt }
-    console.info(JSON.stringify({ event: 'sec_finished', ticker, cik: items[0]?.metadata.cik ?? null, selected: true, ...result }))
+    const scrape = await scrapeSecFilings(ticker)
+    const persistence = await saveSecScrapedItems(scrape.items)
+    const result = {
+      ok: true,
+      found: scrape.items.length,
+      cutoffDate: scrape.cutoffDate,
+      historicalSkipped: scrape.historicalSkipped,
+      totalCandidates: scrape.totalCandidates,
+      ...persistence,
+      rotationIndex,
+      watchlistSize,
+      duration_ms: Date.now() - startedAt,
+    }
+    console.info(JSON.stringify({ event: 'sec_finished', ticker, cik: scrape.items[0]?.metadata.cik ?? null, selected: true, ...result }))
     return result
   } catch (error) {
     const result = { ok: false, found: 0, new: 0, duplicate: 0, rotationIndex, watchlistSize, duration_ms: Date.now() - startedAt, error: error instanceof Error ? error.message : 'unknown error' }

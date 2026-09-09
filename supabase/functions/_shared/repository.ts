@@ -5,26 +5,33 @@ export async function resolveSourceId(slug: string): Promise<string> { const { d
 export async function assertTrackedTicker(ticker: string): Promise<void> { const { data, error } = await createBackendClient().from('tracked_stocks').select('ticker').eq('ticker', ticker).eq('enabled', true).maybeSingle(); if (error) throw new Error(`Could not resolve ticker: ${error.message}`); if (!data) throw new Error('TICKER_NOT_TRACKED') }
 export async function saveScrapedItem(item: ScrapedItemDraft): Promise<'new' | 'duplicate'> { const { error } = await createBackendClient().from('scraped_items').insert(item); if (!error) return 'new'; if (error.code === '23505') return 'duplicate'; throw new Error(`Could not save scraped item: ${error.message}`) }
 
-export type SaveSecItemsResult = { new: number; duplicate: number }
+export type SaveSecItemsResult = { new: number; duplicate: number; newInserted: number; existingSkipped: number }
 
 export async function saveSecScrapedItems(items: ScrapedItemDraft[]): Promise<SaveSecItemsResult> {
-	if (items.length === 0) return { new: 0, duplicate: 0 }
+	if (items.length === 0) return { new: 0, duplicate: 0, newInserted: 0, existingSkipped: 0 }
 	const client = createBackendClient()
+	const accessions = items
+		.map((item) => typeof item.metadata.accessionNumber === 'string' ? item.metadata.accessionNumber : '')
+		.filter(Boolean)
+	const existing = await client
+		.from('scraped_items')
+		.select('metadata')
+		.eq('source_id', items[0].source_id)
+		.eq('ticker', items[0].ticker)
+		.in('metadata->>accessionNumber', [...new Set(accessions)])
+	if (existing.error) throw new Error(`Could not resolve SEC duplicates: ${existing.error.message}`)
+	const existingAccessions = new Set((existing.data ?? []).map((row) => {
+		const metadata = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {}
+		return typeof metadata.accessionNumber === 'string' ? metadata.accessionNumber : ''
+	}).filter(Boolean))
 	let newCount = 0
 	let duplicate = 0
+	let existingSkipped = 0
 	for (const item of items) {
 		const accessionNumber = typeof item.metadata.accessionNumber === 'string' ? item.metadata.accessionNumber : ''
-		const existing = await client
-			.from('scraped_items')
-			.select('id')
-			.eq('source_id', item.source_id)
-			.eq('ticker', item.ticker)
-			.eq('metadata->>accessionNumber', accessionNumber)
-			.limit(1)
-			.maybeSingle()
-		if (existing.error) throw new Error(`Could not resolve SEC duplicate: ${existing.error.message}`)
-		if (existing.data) {
+		if (existingAccessions.has(accessionNumber)) {
 			duplicate += 1
+			existingSkipped += 1
 			continue
 		}
 		const inserted = await client.from('scraped_items').insert(item)
@@ -32,7 +39,7 @@ export async function saveSecScrapedItems(items: ScrapedItemDraft[]): Promise<Sa
 		else if (inserted.error.code === '23505') duplicate += 1
 		else throw new Error(`Could not save SEC scraped item: ${inserted.error.message}`)
 	}
-	return { new: newCount, duplicate }
+	return { new: newCount, duplicate, newInserted: newCount, existingSkipped }
 }
 
 export async function saveFinvizScrapedItem(item: ScrapedItemDraft): Promise<'new' | 'duplicate' | 'updated'> {

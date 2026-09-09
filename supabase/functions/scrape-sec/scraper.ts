@@ -39,6 +39,13 @@ export type SecFiling = {
   items: string[]
 }
 
+export type SecScrapeResult = {
+  items: ScrapedItemDraft[]
+  cutoffDate: string
+  historicalSkipped: number
+  totalCandidates: number
+}
+
 function getHeaders(): HeadersInit {
   const userAgent = Deno.env.get(SEC_USER_AGENT_ENV)?.trim()
   if (!userAgent) throw new Error('SEC_USER_AGENT_MISSING')
@@ -107,7 +114,7 @@ function toFiling(submissions: Submissions, ticker: string, cik: string, company
   }
 }
 
-export async function scrapeSecFilings(ticker: string): Promise<ScrapedItemDraft[]> {
+export async function scrapeSecFilings(ticker: string): Promise<SecScrapeResult> {
   const headers = getHeaders()
   const directory = await fetchJson<Record<string, TickerEntry>>(SEC_TICKERS_URL, headers)
   const match = Object.values(directory).find((entry) => entry.ticker?.trim().toUpperCase() === ticker)
@@ -116,10 +123,15 @@ export async function scrapeSecFilings(ticker: string): Promise<ScrapedItemDraft
   const submissions = await fetchJson<Submissions>(`${SEC_SUBMISSIONS_URL}${cik}.json`, headers)
   const companyName = submissions.name ?? match.title
   const recent = submissions.filings?.recent?.form ?? []
-  const filings = recent.map((_, index) => toFiling(submissions, ticker, cik, companyName, index)).filter((filing): filing is SecFiling => filing !== null)
+  const cutoff = new Date()
+  cutoff.setUTCFullYear(cutoff.getUTCFullYear() - 1)
+  const cutoffDate = cutoff.toISOString().slice(0, 10)
+  const allFilings = recent.map((_, index) => toFiling(submissions, ticker, cik, companyName, index)).filter((filing): filing is SecFiling => filing !== null)
+  const historicalSkipped = allFilings.filter((filing) => filing.filingDate !== null && filing.filingDate < cutoffDate).length
+  const filings = allFilings.filter((filing) => filing.filingDate !== null && filing.filingDate >= cutoffDate)
   const sourceId = await resolveSourceId('sec')
 
-  return await Promise.all(filings.map(async (filing) => {
+  const items = await Promise.all(filings.map(async (filing) => {
     const filingKey = filing.accessionNumber
     const title = `${filing.form} — ${filing.companyName}`
     const content = JSON.stringify({ form: filing.form, filingDate: filing.filingDate, reportDate: filing.reportDate, accessionNumber: filing.accessionNumber, items: filing.items })
@@ -141,4 +153,5 @@ export async function scrapeSecFilings(ticker: string): Promise<ScrapedItemDraft
       },
     }
   }))
+  return { items, cutoffDate, historicalSkipped, totalCandidates: allFilings.length }
 }
