@@ -7,6 +7,7 @@ import type { MarketFeedFilters, ScrapedItem, TickerSummary, TrackedStock } from
 const POLLING_MS = 300000
 const PAGE_SIZE = 20
 const dateFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+const secDateFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
 const dateTimeFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 
 type DataState = { stocks: TrackedStock[]; items: ScrapedItem[] }
@@ -16,8 +17,32 @@ function effectiveDate(item: ScrapedItem): number {
   return new Date(item.published_at ?? item.scraped_at).getTime()
 }
 
-function displayDate(value: string | null): string {
-  return value ? dateTimeFormatter.format(new Date(value)) : 'Date unavailable'
+function isSecFiling(item: ScrapedItem): boolean {
+  return item.metadata.source === 'SEC' || typeof item.metadata.accessionNumber === 'string'
+}
+
+function displayDate(value: string | null, includeTime = true): string {
+  if (!value) return 'Date unavailable'
+  return includeTime ? dateTimeFormatter.format(new Date(value)) : dateFormatter.format(new Date(value))
+}
+
+function displaySecDate(value: string | null): string {
+  if (!value) return 'Date unavailable'
+  return secDateFormatter.format(new Date(`${value.slice(0, 10)}T00:00:00Z`))
+}
+
+function displayFilingForm(item: ScrapedItem): string {
+  const form = typeof item.metadata.form === 'string' ? item.metadata.form : null
+  const baseForm = typeof item.metadata.baseForm === 'string' ? item.metadata.baseForm : null
+  const isAmendment = item.metadata.isAmendment === true || item.metadata.isAmendment === 'true'
+  if (form) return form
+  if (baseForm) return isAmendment ? `${baseForm}/A` : baseForm
+  return 'SEC filing'
+}
+
+function displayMetadataValue(item: ScrapedItem, key: string): string | null {
+  const value = item.metadata[key]
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? String(value) : null
 }
 
 function LoginView() {
@@ -133,13 +158,14 @@ function App() {
 
   const summaries = useMemo(() => {
     const byTicker = new Map<string, TickerSummary>()
-    data.stocks.forEach((stock) => byTicker.set(stock.ticker, { ticker: stock.ticker, totalNews: 0, totalPosts: 0, lastUpdated: null }))
+    data.stocks.forEach((stock) => byTicker.set(stock.ticker, { ticker: stock.ticker, totalNews: 0, totalFilings: 0, lastUpdated: null }))
     data.items.forEach((item) => {
       if (!item.ticker || !byTicker.has(item.ticker)) return
       const summary = byTicker.get(item.ticker)!
-      if (item.item_type === 'news') summary.totalNews += 1
-      if (item.item_type === 'post') summary.totalPosts += 1
-      if (!summary.lastUpdated || new Date(item.scraped_at).getTime() > new Date(summary.lastUpdated).getTime()) summary.lastUpdated = item.scraped_at
+      if (item.item_type === 'post') return
+      if (isSecFiling(item)) summary.totalFilings += 1
+      else summary.totalNews += 1
+      if (!summary.lastUpdated || effectiveDate(item) > new Date(summary.lastUpdated).getTime()) summary.lastUpdated = item.published_at ?? item.scraped_at
     })
     return byTicker
   }, [data])
@@ -149,8 +175,9 @@ function App() {
     const now = Date.now()
     const periodMs: Record<MarketFeedFilters['period'], number> = { hour: 3600000, today: 86400000, 'three-days': 259200000, 'seven-days': 604800000, all: Number.POSITIVE_INFINITY }
     return [...new Map(data.items.filter((item) => {
-      const sourceMatch = filters.source === 'all' || (filters.source === 'news' ? item.item_type === 'news' : item.item_type === 'post')
-      return item.ticker === activeTicker && sourceMatch && now - effectiveDate(item) <= periodMs[filters.period]
+      if (item.ticker !== activeTicker || item.item_type === 'post') return false
+      const sourceMatch = filters.source === 'all' || (filters.source === 'news' ? !isSecFiling(item) : isSecFiling(item))
+      return sourceMatch && now - effectiveDate(item) <= periodMs[filters.period]
     }).map((item) => [item.id, item])).values()].sort((a, b) => effectiveDate(b) - effectiveDate(a))
   }, [activeTicker, data.items, filters])
 
@@ -223,10 +250,10 @@ function App() {
     <main className="content">
       <section className="page-heading"><div><p className="eyebrow">PORTFOLIO INTELLIGENCE</p><h1>Watchlist</h1><p className="muted">A focused view of the latest market signals.</p></div><button className="quiet-button" onClick={() => void loadData()} disabled={loading}><RefreshCw size={16} className={loading ? 'spin' : ''} />{loading ? 'Refreshing' : 'Refresh'}</button></section>
       {finvizTestResult && <section className={`diagnostic-result ${finvizTestResult.status}`}><strong>{finvizTestResult.status === 'success' ? 'Success' : 'Error'}</strong>{finvizTestResult.message && <span>Message: {finvizTestResult.message}</span>}{finvizTestResult.code && <span>Code: {finvizTestResult.code}</span>}{finvizTestResult.httpStatus !== null && <span>HTTP status: {finvizTestResult.httpStatus}</span>}{finvizTestResult.responseBody !== null && <span>Response body: {finvizTestResult.responseBody}</span>}{finvizTestResult.data !== null && <pre>{JSON.stringify(finvizTestResult.data, null, 2)}</pre>}</section>}
-      <section className="watchlist-section"><div className="section-topline"><h2>Tracked tickers</h2><span className="counter">{data.stocks.length} active</span></div><div className="ticker-row">{data.stocks.map((stock) => <div key={stock.id} className={`ticker-card ${activeTicker === stock.ticker ? 'selected' : ''}`} role="button" tabIndex={0} onClick={() => setActiveTicker(stock.ticker)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setActiveTicker(stock.ticker) }}><button className="remove-ticker" title={`Remove ${stock.ticker}`} aria-label={`Remove ${stock.ticker}`} disabled={mutatingTicker !== null} onClick={(event) => { event.stopPropagation(); void removeTicker(stock.ticker) }}><Trash2 size={14} /></button><span className="ticker-symbol">{stock.ticker}</span><span className="ticker-name">{stock.company_name ?? 'Tracked security'}</span><span className="ticker-stats"><b>{summaries.get(stock.ticker)?.totalNews ?? 0}</b> news <b>{summaries.get(stock.ticker)?.totalPosts ?? 0}</b> posts</span><span className="ticker-updated">{summaries.get(stock.ticker)?.lastUpdated ? `Updated ${displayDate(summaries.get(stock.ticker)!.lastUpdated)}` : 'Awaiting first update'}</span><span className="card-accent" /></div>)}<form className="add-ticker" onSubmit={addTicker}><Search size={17} /><input placeholder="Add ticker" aria-label="Add ticker" value={tickerInput} onChange={(event) => setTickerInput(event.target.value)} /><button title="Add ticker" aria-label="Add ticker" disabled={!tickerInput.trim() || mutatingTicker !== null}><Plus size={18} /></button></form></div></section>
+      <section className="watchlist-section"><div className="section-topline"><h2>Tracked tickers</h2><span className="counter">{data.stocks.length} active</span></div><div className="ticker-row">{data.stocks.map((stock) => <div key={stock.id} className={`ticker-card ${activeTicker === stock.ticker ? 'selected' : ''}`} role="button" tabIndex={0} onClick={() => setActiveTicker(stock.ticker)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setActiveTicker(stock.ticker) }}><button className="remove-ticker" title={`Remove ${stock.ticker}`} aria-label={`Remove ${stock.ticker}`} disabled={mutatingTicker !== null} onClick={(event) => { event.stopPropagation(); void removeTicker(stock.ticker) }}><Trash2 size={14} /></button><span className="ticker-symbol">{stock.ticker}</span><span className="ticker-name">{stock.company_name ?? 'Tracked security'}</span><span className="ticker-stats"><b>{summaries.get(stock.ticker)?.totalNews ?? 0}</b> news <b>{summaries.get(stock.ticker)?.totalFilings ?? 0}</b> SEC</span><span className="ticker-updated">{summaries.get(stock.ticker)?.lastUpdated ? `Updated ${displayDate(summaries.get(stock.ticker)!.lastUpdated)}` : 'Awaiting first update'}</span><span className="card-accent" /></div>)}<form className="add-ticker" onSubmit={addTicker}><Search size={17} /><input placeholder="Add ticker" aria-label="Add ticker" value={tickerInput} onChange={(event) => setTickerInput(event.target.value)} /><button title="Add ticker" aria-label="Add ticker" disabled={!tickerInput.trim() || mutatingTicker !== null}><Plus size={18} /></button></form></div></section>
       {error && <div className="error-banner"><X size={17} />{error}</div>}
-      <section className="feed-section"><div className="feed-header"><div><p className="eyebrow">MARKET FEED</p><h2>{activeTicker ?? 'Select a ticker'}</h2></div><div className="filters"><div className="segmented">{([['all', 'All'], ['news', 'News'], ['stocktwits', 'StockTwits']] as const).map(([value, label]) => <button key={value} className={filters.source === value ? 'active' : ''} onClick={() => setFilters({ ...filters, source: value })}>{label}</button>)}</div><select aria-label="Filter by time" value={filters.period} onChange={(event) => setFilters({ ...filters, period: event.target.value as MarketFeedFilters['period'] })}><option value="hour">Last hour</option><option value="today">Today</option><option value="three-days">3 days</option><option value="seven-days">7 days</option><option value="all">All time</option></select></div></div>
-        {pageGroups.length === 0 ? <div className="empty-state"><Clock3 size={22} />{activeTicker && !data.items.some((item) => item.ticker === activeTicker) ? 'Waiting for first data update' : 'No items match these filters.'}</div> : <div className="feed-list">{pageGroups.map(([group, items]) => <div className="feed-group" key={group}><h3>{group}</h3>{items.map((item) => item.item_type === 'post' ? <article className="feed-item post-item" key={item.id}><div className="source-dot stocktwits-dot">S</div><div className="item-body"><div className="item-meta"><span>StockTwits</span><time>{displayDate(item.published_at ?? item.scraped_at)}</time></div><h3>{item.author ? `@${item.author}` : 'StockTwits post'}</h3><p>{item.content ?? 'No content available.'}</p></div></article> : <article className="feed-item" key={item.id}><div className="source-dot news-dot">N</div><div className="item-body"><div className="item-meta"><span>{typeof item.metadata.provider === 'string' ? item.metadata.provider : 'News'}</span><time>{displayDate(item.published_at ?? item.scraped_at)}</time></div><h3>{item.title ?? 'Untitled news item'}</h3><a href={item.url} target="_blank" rel="noreferrer">Read original <ArrowUpRight size={15} /></a></div></article>)}</div>)}</div>}
+              <section className="feed-section"><div className="feed-header"><div><p className="eyebrow">MARKET FEED</p><h2>{activeTicker ?? 'Select a ticker'}</h2></div><div className="filters"><div className="segmented">{([['all', 'All'], ['news', 'News'], ['sec', 'SEC']] as const).map(([value, label]) => <button key={value} className={filters.source === value ? 'active' : ''} onClick={() => setFilters({ ...filters, source: value })}>{label}</button>)}</div><select aria-label="Filter by time" value={filters.period} onChange={(event) => setFilters({ ...filters, period: event.target.value as MarketFeedFilters['period'] })}><option value="hour">Last hour</option><option value="today">Today</option><option value="three-days">3 days</option><option value="seven-days">7 days</option><option value="all">All time</option></select></div></div>
+        {pageGroups.length === 0 ? <div className="empty-state"><Clock3 size={22} />{activeTicker && !data.items.some((item) => item.ticker === activeTicker && item.item_type !== 'post') ? 'Waiting for first data update' : 'No items match these filters.'}</div> : <div className="feed-list">{pageGroups.map(([group, items]) => <div className="feed-group" key={group}><h3>{group}</h3>{items.map((item) => isSecFiling(item) ? <article className="feed-item sec-item" key={item.id}><div className="source-dot sec-dot">SEC</div><div className="item-body"><div className="item-meta"><span>SEC</span><span className="filing-form">{displayFilingForm(item)}</span><time>{displaySecDate(item.published_at)}</time></div><h3>{item.title ?? `${displayFilingForm(item)} filing`}</h3><p className="filing-ticker">{item.ticker ?? 'Unknown ticker'} official filing</p><div className="filing-details">{displayMetadataValue(item, 'reportDate') && <span>Report date: {displayMetadataValue(item, 'reportDate')}</span>}{displayMetadataValue(item, 'isXbrl') && <span>XBRL: {displayMetadataValue(item, 'isXbrl')}</span>}{displayMetadataValue(item, 'accessionNumber') && <span>Accession: {displayMetadataValue(item, 'accessionNumber')}</span>}</div><a href={item.url} target="_blank" rel="noreferrer">Open SEC document <ArrowUpRight size={15} /></a></div></article> : <article className="feed-item news-item" key={item.id}><div className="source-dot news-dot">N</div><div className="item-body"><div className="item-meta"><span>{typeof item.metadata.provider === 'string' ? item.metadata.provider : 'FINVIZ'}</span><span className="source-label">FINVIZ</span><time>{displayDate(item.published_at)}</time></div><h3>{item.title ?? 'Untitled news item'}</h3><p className="filing-ticker">{item.ticker ?? 'Unknown ticker'}</p><a href={item.url} target="_blank" rel="noreferrer">Read original <ArrowUpRight size={15} /></a></div></article>)}</div>)}</div>}
         {filteredItems.length > PAGE_SIZE && <div className="pagination"><span>Showing {(page - 1) * PAGE_SIZE + 1}-{Math.min(page * PAGE_SIZE, filteredItems.length)} of {filteredItems.length}</span><div><button title="Previous page" aria-label="Previous page" disabled={page === 1} onClick={() => setPage(page - 1)}><ChevronLeft size={17} /></button><button title="Next page" aria-label="Next page" disabled={page * PAGE_SIZE >= filteredItems.length} onClick={() => setPage(page + 1)}><ChevronRight size={17} /></button></div></div>}
       </section>
     </main>

@@ -23,13 +23,13 @@ export type ScrapedItem = {
 }
 
 export type MarketFeedFilters = {
-  source: 'all' | 'news' | 'stocktwits'
+  source: 'all' | 'news' | 'sec'
   period: 'hour' | 'today' | 'three-days' | 'seven-days' | 'all'
 }
 
 export type TickerSummary = {
   ticker: string
   totalNews: number
-  totalPosts: number
+  totalFilings: number
   lastUpdated: string | null
 }
