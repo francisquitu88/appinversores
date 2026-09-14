@@ -1,4 +1,5 @@
 import type { ScrapedItemDraft } from './scraper.ts'
+import type { FinvizAnalystRatingDraft, FinvizInsiderTradeDraft } from '../scrape-finviz/scraper.ts'
 import { createBackendClient } from './supabase.ts'
 
 export async function resolveSourceId(slug: string): Promise<string> { const { data, error } = await createBackendClient().from('sources').select('id').eq('slug', slug).eq('enabled', true).maybeSingle(); if (error) throw new Error(`Could not resolve source: ${error.message}`); if (!data) throw new Error(`Source '${slug}' was not found or is disabled`); return data.id }
@@ -243,4 +244,38 @@ export async function saveFinvizScrapedItems(items: ScrapedItemDraft[]): Promise
 	}
 
 	return { new: newCount, duplicate, updated }
+}
+
+export type SaveStructuredFinvizResult = { new: number; duplicate: number }
+
+async function saveStructuredFinvizRecords<T extends { source_id: string; ticker: string; content_hash: string }>(table: string, items: T[]): Promise<SaveStructuredFinvizResult> {
+	if (items.length === 0) return { new: 0, duplicate: 0 }
+	const client = createBackendClient()
+	const hashes = [...new Set(items.map((item) => item.content_hash))]
+	const existing = await client.from(table).select('content_hash').eq('source_id', items[0].source_id).eq('ticker', items[0].ticker).in('content_hash', hashes)
+	if (existing.error) throw new Error(`Could not resolve FINVIZ structured duplicates: ${existing.error.message}`)
+	const existingHashes = new Set((existing.data ?? []).map((row) => row.content_hash).filter((hash): hash is string => typeof hash === 'string'))
+	let newCount = 0
+	let duplicate = 0
+	for (const item of items) {
+		if (existingHashes.has(item.content_hash)) {
+			duplicate += 1
+			continue
+		}
+		const inserted = await client.from(table).insert(item)
+		if (!inserted.error) {
+			newCount += 1
+			existingHashes.add(item.content_hash)
+		} else if (inserted.error.code === '23505') duplicate += 1
+		else throw new Error(`Could not save FINVIZ structured record: ${inserted.error.message}`)
+	}
+	return { new: newCount, duplicate }
+}
+
+export function saveFinvizAnalystRatings(items: FinvizAnalystRatingDraft[]): Promise<SaveStructuredFinvizResult> {
+	return saveStructuredFinvizRecords('finviz_analyst_ratings', items)
+}
+
+export function saveFinvizInsiderTrades(items: FinvizInsiderTradeDraft[]): Promise<SaveStructuredFinvizResult> {
+	return saveStructuredFinvizRecords('finviz_insider_trades', items)
 }

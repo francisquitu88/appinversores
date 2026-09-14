@@ -1,5 +1,5 @@
 import { finvizScraper } from './scraper.ts'
-import { assertTrackedTicker, saveFinvizScrapedItems } from '../_shared/repository.ts'
+import { assertTrackedTicker, saveFinvizAnalystRatings, saveFinvizInsiderTrades, saveFinvizScrapedItems } from '../_shared/repository.ts'
 import { errorResponse, handleOptions, ok, readJson } from '../_shared/response.ts'
 import { normalizeTicker } from '../_shared/scraper.ts'
 import { requireAuthenticatedUser } from '../_shared/supabase.ts'
@@ -24,8 +24,8 @@ Deno.serve(async (request) => {
     if (!ticker) return errorResponse('INVALID_TICKER', 'ticker must be a valid symbol such as NVDA', 400, request)
     await assertTrackedTicker(ticker)
     console.info(JSON.stringify({ event: 'scrape_started', source: 'finviz', ticker }))
-    const items = await finvizScraper.scrape({ ticker }); const persistence = await saveFinvizScrapedItems(items); const newItems = persistence.new; const duplicates = persistence.duplicate; const updated = persistence.updated
-    const result = { source: 'finviz', ticker, found: items.length, new: newItems, duplicates, updated, durationMs: Date.now() - startedAt }
+    const scrape = await finvizScraper.scrapeDetailed({ ticker }); const persistence = await saveFinvizScrapedItems(scrape.news); const ratingsPersistence = await saveFinvizAnalystRatings(scrape.analystRatings); const insiderPersistence = await saveFinvizInsiderTrades(scrape.insiderTrades)
+    const result = { source: 'finviz', ticker, found: scrape.news.length, new: persistence.new, duplicates: persistence.duplicate, updated: persistence.updated, newsFound: scrape.news.length, ratingsFound: scrape.analystRatings.length, insiderTradesFound: scrape.insiderTrades.length, newsNew: persistence.new, ratingsNew: ratingsPersistence.new, insiderTradesNew: insiderPersistence.new, ratingsDuplicate: ratingsPersistence.duplicate, insiderTradesDuplicate: insiderPersistence.duplicate, durationMs: Date.now() - startedAt }
     console.info(JSON.stringify({ event: 'scrape_finished', ...result })); return ok(result, request)
   } catch (error) { const message = error instanceof Error ? error.message : ''; console.error(JSON.stringify({ event: 'scrape_failed', source: 'finviz', durationMs: Date.now() - startedAt, error: message || 'unknown error' })); if (message === 'TICKER_NOT_TRACKED') return errorResponse('TICKER_NOT_TRACKED', 'Ticker is not enabled in tracked_stocks', 404, request); if (message.includes('timed out')) return errorResponse('FIRECRAWL_TIMEOUT', 'The scraping provider timed out', 504, request); if (message.startsWith('Firecrawl')) return errorResponse('FIRECRAWL_ERROR', 'The scraping provider failed', 502, request); return errorResponse('SCRAPER_ERROR', 'Finviz scraper failed', 500, request) }
 })

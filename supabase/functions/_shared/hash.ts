@@ -13,3 +13,10 @@ export async function generateContentHash(input: { source: string; ticker: strin
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical))
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
+
+export async function generateIdentityHash(source: string, values: Array<string | null | undefined>): Promise<string> {
+  const normalize = (value: string | null | undefined) => (value ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase()
+  const canonical = [source, ...values].map(normalize).join('|')
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}

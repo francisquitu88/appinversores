@@ -1,4 +1,4 @@
-import type { ScrapedItemType } from '../../../src/types/index.ts'
+import type { ScrapedItemType } from '../../../src/types.ts'
 
 export interface ScraperInput { ticker: string }
 export interface ScrapedItemDraft { source_id: string; ticker: string | null; item_type: ScrapedItemType; title: string | null; content: string | null; author: string | null; url: string; published_at: string | null; scraped_at: string; content_hash: string; metadata: Record<string, unknown> }

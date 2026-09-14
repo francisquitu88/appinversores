@@ -6,6 +6,8 @@ export type TrackedStock = {
   created_at: string
 }
 
+export type ScrapedItemType = 'news' | 'post' | string
+
 export type ScrapedItem = {
   id: string
   source_id: string
@@ -19,7 +21,40 @@ export type ScrapedItem = {
   content_hash: string
   metadata: Record<string, unknown>
   created_at: string
-  item_type: 'news' | 'post' | string
+  item_type: ScrapedItemType
+}
+
+export type FinvizAnalystRating = {
+  id: string
+  ticker: string
+  source_id: string
+  rating_date: string
+  action: string
+  analyst: string
+  rating_change: string
+  price_target_change: string
+  created_at: string
+  scraped_at: string
+  content_hash: string
+}
+
+export type FinvizInsiderTrade = {
+  id: string
+  ticker: string
+  source_id: string
+  insider_name: string
+  relationship: string
+  transaction_date: string
+  transaction: string
+  cost: string
+  shares: string
+  value: string
+  shares_total: string
+  sec_form4_url: string
+  form4_display_timestamp?: string | null
+  created_at: string
+  scraped_at: string
+  content_hash: string
 }
 
 export type MarketFeedFilters = {
@@ -31,5 +66,10 @@ export type TickerSummary = {
   ticker: string
   totalNews: number
   totalFilings: number
+  totalRatings: number
+  totalInsiders: number
+  latestNews: string | null
+  latestRating: string | null
+  latestInsider: string | null
   lastUpdated: string | null
 }

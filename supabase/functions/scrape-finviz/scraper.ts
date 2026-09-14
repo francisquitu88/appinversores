@@ -1,5 +1,5 @@
 import { createFirecrawlClient, type FirecrawlDocument } from '../_shared/firecrawl.ts'
-import { generateContentHash } from '../_shared/hash.ts'
+import { generateContentHash, generateIdentityHash } from '../_shared/hash.ts'
 import { resolveSourceId } from '../_shared/repository.ts'
 import { normalizeTicker } from '../_shared/scraper.ts'
 import type { Scraper, ScrapedItemDraft } from '../_shared/scraper.ts'
@@ -8,6 +8,41 @@ const FINVIZ_URL = 'https://finviz.com/quote.ashx?t='
 const FINVIZ_TIME_ZONE = 'America/New_York'
 const FINVIZ_MAX_NEWS_ROWS = 300
 const KURA_DIRECT_FETCH_TIMEOUT_MS = 10_000
+
+export type FinvizAnalystRatingDraft = {
+  ticker: string
+  source_id: string
+  rating_date: string
+  action: string
+  analyst: string
+  rating_change: string
+  price_target_change: string
+  scraped_at: string
+  content_hash: string
+}
+
+export type FinvizInsiderTradeDraft = {
+  ticker: string
+  source_id: string
+  insider_name: string
+  relationship: string
+  transaction_date: string
+  transaction: string
+  cost: string
+  shares: string
+  value: string
+  shares_total: string
+  sec_form4_url: string
+  form4_display_timestamp?: string | null
+  scraped_at: string
+  content_hash: string
+}
+
+export type FinvizScrapeResult = {
+  news: ScrapedItemDraft[]
+  analystRatings: FinvizAnalystRatingDraft[]
+  insiderTrades: FinvizInsiderTradeDraft[]
+}
 
 function normalizeArticleText(value: string | null | undefined): string {
   return (value ?? '').normalize('NFKC').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
@@ -88,10 +123,15 @@ function normalizeText(value: string | null | undefined): string | null {
   return cleaned.length > 0 ? cleaned : null
 }
 
+function normalizeCellText(value: string): string {
+  return normalizeText(decodeHtmlEntities(value)) ?? ''
+}
+
 function decodeHtmlEntities(value: string): string {
   return value
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
+    .replace(/&rarr;|&#8594;/gi, '→')
     .replace(/&#39;/gi, "'")
     .replace(/&quot;/gi, '"')
     .replace(/&lt;/gi, '<')
@@ -161,6 +201,99 @@ export function parseFinvizTimestamp(rawValue: string | null, currentNewsDate: s
 
 function extractNewsRows(tableHtml: string): string[] {
   return [...tableHtml.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map((match) => match[1] ?? '').filter((rowHtml) => rowHtml.trim().length > 0)
+}
+
+function extractTableCells(rowHtml: string): string[] {
+  return [...rowHtml.matchAll(/<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)].map((match) => match[1] ?? '')
+}
+
+function extractTableByClass(html: string, classPattern: RegExp): string | null {
+  for (const match of html.matchAll(/<table\b([^>]*)>[\s\S]*?<\/table>/gi)) {
+    const attributes = match[1] ?? ''
+    const className = attributes.match(/\bclass\s*=\s*["']([^"']*)["']/i)?.[1] ?? ''
+    if (classPattern.test(className)) return match[0]
+  }
+  return null
+}
+
+function parseFinvizCalendarDate(value: string): string | null {
+  return parseDateContext(value)?.value ?? null
+}
+
+export function extractAnalystRatings(html: string, ticker: string, sourceId: string, scrapedAt: string): FinvizAnalystRatingDraft[] {
+  const tableHtml = html.match(/<table\b[^>]*\bclass\s*=\s*["'][^"']*\bjs-table-ratings\b[^"']*["'][^>]*>[\s\S]*?<\/table>/i)?.[0] ?? null
+  if (!tableHtml) return []
+
+  const ratings: FinvizAnalystRatingDraft[] = []
+  for (const row of extractNewsRows(tableHtml)) {
+    const cells = extractTableCells(row).map(normalizeCellText)
+    if (cells.length < 5 || cells[0].toLowerCase() === 'date') continue
+    const ratingDate = parseFinvizCalendarDate(cells[0])
+    if (!ratingDate) continue
+    ratings.push({ ticker, source_id: sourceId, rating_date: ratingDate, action: cells[1], analyst: cells[2], rating_change: cells[3], price_target_change: cells[4], scraped_at: scrapedAt, content_hash: '' })
+  }
+  return ratings
+}
+
+function toAbsoluteFinvizUrl(value: string, baseUrl: string): string {
+  try { return new URL(value, baseUrl).toString() } catch { return value }
+}
+
+function parseInsiderCalendarDate(value: string): string | null {
+  const match = value.match(/^([A-Za-z]{3})\s+(\d{1,2})\s+'(\d{2})$/i)
+  if (!match) return null
+  return parseDateContext(`${match[1]}-${String(match[2]).padStart(2, '0')}-${match[3]}`)?.value ?? null
+}
+
+export function extractInsiderTrades(html: string, ticker: string, sourceId: string, scrapedAt: string, baseUrl: string): FinvizInsiderTradeDraft[] {
+  const tableHtml = extractTableByClass(html, /(?:^|\s)body-table(?:\s|$)/)
+  if (!tableHtml || !/Insider Trading/i.test(tableHtml)) return []
+
+  const trades: FinvizInsiderTradeDraft[] = []
+  for (const row of extractNewsRows(tableHtml)) {
+    const cells = extractTableCells(row)
+    const values = cells.map(normalizeCellText)
+    if (values.length < 9 || values[0].toLowerCase() === 'insider trading') continue
+    const transactionDate = parseInsiderCalendarDate(values[2])
+    if (!transactionDate) continue
+    trades.push({
+      ticker,
+      source_id: sourceId,
+      insider_name: values[0],
+      relationship: values[1],
+      transaction_date: transactionDate,
+      transaction: values[3],
+      cost: values[4],
+      shares: values[5],
+      value: values[6],
+      shares_total: values[7],
+      sec_form4_url: extractSecForm4Url(cells[8], baseUrl),
+      form4_display_timestamp: values[8] || null,
+      scraped_at: scrapedAt,
+      content_hash: '',
+    })
+  }
+  return trades.filter((trade) => trade.insider_name.length > 0 && trade.transaction_date.length > 0)
+}
+
+function dedupeAnalystRatings(items: FinvizAnalystRatingDraft[]): FinvizAnalystRatingDraft[] {
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    const key = [item.ticker, item.rating_date, item.action, item.analyst, item.rating_change, item.price_target_change].join('|')
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function dedupeInsiderTrades(items: FinvizInsiderTradeDraft[]): FinvizInsiderTradeDraft[] {
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    const key = [item.ticker, item.insider_name, item.relationship, item.transaction_date, item.transaction, item.cost, item.shares, item.value, item.shares_total, item.sec_form4_url].join('|')
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 function resolveDirectNewsUrls(html: string, baseUrl: string): string {
@@ -236,6 +369,12 @@ function extractLinksFromCell(cellHtml: string): { href: string | null; text: st
   const text = textMatch ? normalizeText(decodeHtmlEntities(textMatch[1])) : null
 
   return { href, text }
+}
+
+function extractSecForm4Url(cellHtml: string, baseUrl: string): string {
+  const hrefs = [...cellHtml.matchAll(/\bhref\s*=\s*["']([^"']+)["']/gi)].map((match) => match[1] ?? '')
+  const href = hrefs.find((value) => /(?:^|\/)sec\.gov\//i.test(value)) ?? hrefs.at(-1) ?? ''
+  return toAbsoluteFinvizUrl(href, baseUrl)
 }
 
 function extractProviderFromTitle(titleText: string | null): string | null {
@@ -359,14 +498,14 @@ function extractNews(document: FirecrawlDocument, ticker: string, sourceId: stri
   return items
 }
 
-export const finvizScraper: Scraper = {
-  source: 'finviz',
-  async scrape({ ticker }) {
+async function scrapeFinvizDetailed({ ticker }: { ticker: string }): Promise<FinvizScrapeResult> {
     const sourceId = await resolveSourceId('finviz')
     const requestedTicker = normalizeTicker(ticker) ?? ticker.toUpperCase()
     const finvizUrl = `${FINVIZ_URL}${encodeURIComponent(requestedTicker)}`
     const startedAt = Date.now()
     let items: ScrapedItemDraft[] = []
+    let pageHtml = ''
+    let pageBaseUrl = finvizUrl
     let directStatus: number | null = null
     let directRows = 0
     let directSucceeded = false
@@ -392,9 +531,12 @@ export const finvizScraper: Scraper = {
       directStatus = response.status
       const contentType = response.headers.get('content-type')
       const html = await response.text()
+      pageHtml = html
+      pageBaseUrl = response.url
       const newsTableDetected = /<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>/i.test(html)
       if (response.ok && contentType && /(?:text\/html|application\/xhtml\+xml)/i.test(contentType) && newsTableDetected) {
         const normalizedHtml = resolveDirectNewsUrls(html, response.url)
+        pageHtml = normalizedHtml
         const tableMatch = normalizedHtml.match(/<table\b[^>]*\b(?:id|class)\s*=\s*["'][^"']*\bnews-table\b[^"']*["'][^>]*>[\s\S]*?<\/table>/i)
         directRows = tableMatch ? extractNewsRows(tableMatch[0]).length : 0
         items = extractNews({ html: normalizedHtml }, requestedTicker, sourceId)
@@ -408,7 +550,9 @@ export const finvizScraper: Scraper = {
       console.info(JSON.stringify({ event: 'finviz_transport', ticker: requestedTicker, method: 'direct', status: directStatus, rows: directRows, items: items.length, durationMs: Date.now() - startedAt }))
     } else {
       const document = await createFirecrawlClient().scrape(finvizUrl)
-      items = extractNews(document, requestedTicker, sourceId)
+      pageHtml = document.html ?? document.markdown ?? ''
+      pageBaseUrl = finvizUrl
+      items = extractNews({ html: pageHtml }, requestedTicker, sourceId)
       console.info(JSON.stringify({ event: 'finviz_transport', ticker: requestedTicker, method: 'firecrawl', reason: 'direct_fetch_failed', items: items.length, durationMs: Date.now() - startedAt }))
     }
 
@@ -425,6 +569,23 @@ export const finvizScraper: Scraper = {
       })
     }
 
-    return dedupedItems
+    const scrapedAt = new Date().toISOString()
+    const analystRatings = dedupeAnalystRatings(extractAnalystRatings(pageHtml, requestedTicker, sourceId, scrapedAt))
+    for (const rating of analystRatings) {
+      rating.content_hash = await generateIdentityHash('finviz:analyst-rating', [rating.ticker, rating.rating_date, rating.action, rating.analyst, rating.rating_change, rating.price_target_change])
+    }
+    const insiderTrades = dedupeInsiderTrades(extractInsiderTrades(pageHtml, requestedTicker, sourceId, scrapedAt, pageBaseUrl))
+    for (const trade of insiderTrades) {
+      trade.content_hash = await generateIdentityHash('finviz:insider-trade', [trade.ticker, trade.insider_name, trade.relationship, trade.transaction_date, trade.transaction, trade.cost, trade.shares, trade.value, trade.shares_total, trade.sec_form4_url])
+    }
+
+    return { news: dedupedItems, analystRatings, insiderTrades }
+}
+
+export const finvizScraper: Scraper & { scrapeDetailed(input: { ticker: string }): Promise<FinvizScrapeResult> } = {
+  source: 'finviz',
+  async scrape(input) {
+    return (await scrapeFinvizDetailed(input)).news
   },
+  scrapeDetailed: scrapeFinvizDetailed,
 }

@@ -2,7 +2,7 @@ import { finvizScraper } from '../scrape-finviz/scraper.ts'
 import { stockTwitsScraper } from '../scrape-stocktwits/scraper.ts'
 import { scrapeSecFilings } from '../scrape-sec/scraper.ts'
 import { createBackendClient } from '../_shared/supabase.ts'
-import { saveFinvizScrapedItems, saveScrapedItem, saveSecScrapedItems } from '../_shared/repository.ts'
+import { saveFinvizAnalystRatings, saveFinvizInsiderTrades, saveFinvizScrapedItems, saveScrapedItem, saveSecScrapedItems } from '../_shared/repository.ts'
 import { errorResponse, handleOptions, ok } from '../_shared/response.ts'
 
 const MAX_CONCURRENCY = 3
@@ -26,11 +26,40 @@ function isAuthorized(request: Request): boolean {
 
 async function runFinviz(ticker: string) {
   try {
-    const items = await finvizScraper.scrape({ ticker })
-    const persistence = await saveFinvizScrapedItems(items)
-    return { ok: true, found: items.length, ...persistence }
+    const scrape = await finvizScraper.scrapeDetailed({ ticker })
+    let newsPersistence = { new: 0, duplicate: 0, updated: 0 }
+    let ratingsPersistence = { new: 0, duplicate: 0 }
+    let insiderPersistence = { new: 0, duplicate: 0 }
+    let newsError: string | null = null
+    let ratingsError: string | null = null
+    let insiderTradesError: string | null = null
+
+    try {
+      newsPersistence = await saveFinvizScrapedItems(scrape.news)
+    } catch (error) {
+      newsError = error instanceof Error ? error.message : 'unknown error'
+      console.error(JSON.stringify({ event: 'finviz_news_persistence_error', ticker, error: newsError }))
+    }
+
+    try {
+      ratingsPersistence = await saveFinvizAnalystRatings(scrape.analystRatings)
+    } catch (error) {
+      ratingsError = error instanceof Error ? error.message : 'unknown error'
+      console.error(JSON.stringify({ event: 'finviz_ratings_persistence_error', ticker, error: ratingsError }))
+    }
+
+    try {
+      insiderPersistence = await saveFinvizInsiderTrades(scrape.insiderTrades)
+    } catch (error) {
+      insiderTradesError = error instanceof Error ? error.message : 'unknown error'
+      console.error(JSON.stringify({ event: 'finviz_insider_persistence_error', ticker, error: insiderTradesError }))
+    }
+
+    const errors = [newsError, ratingsError, insiderTradesError].filter(Boolean)
+    const status = errors.length === 0 ? 'ok' : errors.length === 3 ? 'error' : 'partial'
+    return { ok: errors.length === 0, status, found: scrape.news.length, ...newsPersistence, newsFound: scrape.news.length, ratingsFound: scrape.analystRatings.length, insiderTradesFound: scrape.insiderTrades.length, newsNew: newsPersistence.new, ratingsNew: ratingsPersistence.new, insiderTradesNew: insiderPersistence.new, ratingsDuplicate: ratingsPersistence.duplicate, insiderTradesDuplicate: insiderPersistence.duplicate, newsError, ratingsError, insiderTradesError }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : 'unknown error' }
+    return { ok: false, status: 'error', error: error instanceof Error ? error.message : 'unknown error' }
   }
 }
 
