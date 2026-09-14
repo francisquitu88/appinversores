@@ -9,6 +9,69 @@ const FINVIZ_TIME_ZONE = 'America/New_York'
 const FINVIZ_MAX_NEWS_ROWS = 300
 const KURA_DIRECT_FETCH_TIMEOUT_MS = 10_000
 
+function normalizeArticleText(value: string | null | undefined): string {
+  return (value ?? '').normalize('NFKC').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+function canonicalizeUrlForIdentity(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  try {
+    const url = new URL(trimmed)
+    url.hash = ''
+    for (const key of [...url.searchParams.keys()]) if (/^(utm_|ref$|source$|campaign$|mc_)/i.test(key)) url.searchParams.delete(key)
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return trimmed.replace(/\/$/, '')
+  }
+}
+
+function extractYahooStableId(value: string): string | null {
+  try {
+    const url = new URL(value)
+    const hostname = url.hostname.toLowerCase()
+    if (hostname !== 'finance.yahoo.com' && hostname !== 'www.finance.yahoo.com') return null
+
+    const path = url.pathname.replace(/\/$/, '')
+    const healthcareMatch = path.match(/\/healthcare\/articles\/(?:.*-)?(\d+)\.html$/i)
+    if (healthcareMatch?.[1]) {
+      const slug = url.pathname.split('/').filter(Boolean).slice(-1)[0]
+      return slug && slug.toLowerCase().includes('kura') ? null : `yahoo:healthcare:${healthcareMatch[1]}`
+    }
+
+    const mMatch = path.match(/^\/m\/([^/]+)$/i)
+    if (mMatch?.[1]) return null
+  } catch {
+    return null
+  }
+  return null
+}
+
+function buildFinvizArticleIdentity(item: Pick<ScrapedItemDraft, 'ticker' | 'title' | 'published_at' | 'url' | 'metadata'>): string {
+  const stableId = extractYahooStableId(item.url)
+  if (stableId) return `finviz:${stableId}`
+
+  const canonicalUrl = canonicalizeUrlForIdentity(item.url)
+  if (canonicalUrl && !canonicalUrl.includes('finance.yahoo.com')) return `finviz:url:${canonicalUrl}`
+
+  const ticker = normalizeArticleText(item.ticker)
+  const title = normalizeArticleText(item.title)
+  const publishedAt = item.published_at ? item.published_at.replace(/\.[0-9]+Z$/, 'Z').replace(/\+00$/, 'Z') : ''
+  const provider = normalizeArticleText(typeof item.metadata.provider === 'string' ? item.metadata.provider : null)
+
+  const fallback = [ticker, title, publishedAt, provider].join('|')
+  return fallback.length > 0 ? `finviz:fallback:${fallback}` : `finviz:url:${canonicalUrl || item.url}`
+}
+
+function dedupeFinvizItems(items: ScrapedItemDraft[]): ScrapedItemDraft[] {
+  const seen = new Map<string, ScrapedItemDraft>()
+  for (const item of items) {
+    const key = buildFinvizArticleIdentity(item)
+    if (!seen.has(key)) seen.set(key, item)
+  }
+  return [...seen.values()]
+}
+
 function normalizeText(value: string | null | undefined): string | null {
   if (!value) return null
   const cleaned = value
@@ -349,16 +412,19 @@ export const finvizScraper: Scraper = {
       console.info(JSON.stringify({ event: 'finviz_transport', ticker: requestedTicker, method: 'firecrawl', reason: 'direct_fetch_failed', items: items.length, durationMs: Date.now() - startedAt }))
     }
 
-    for (const item of items) {
+    const dedupedItems = dedupeFinvizItems(items)
+    for (const item of dedupedItems) {
+      const articleIdentity = buildFinvizArticleIdentity(item)
       item.content_hash = await generateContentHash({
         source: 'finviz',
         ticker: item.ticker,
         title: item.title,
         content: item.content,
         url: item.url,
+        articleIdentity,
       })
     }
 
-    return items
+    return dedupedItems
   },
 }

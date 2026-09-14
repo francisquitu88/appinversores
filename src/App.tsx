@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { ArrowUpRight, BarChart3, ChevronLeft, ChevronRight, CircleUserRound, Clock3, LogOut, Plus, RefreshCw, Search, ShieldCheck, Trash2, X } from 'lucide-react'
-import { supabase, updateWatchlist } from './lib/supabase'
+import { supabase, updateWatchlist, WatchlistError } from './lib/supabase'
 import type { MarketFeedFilters, ScrapedItem, TickerSummary, TrackedStock } from './types'
 
 const POLLING_MS = 300000
 const PAGE_SIZE = 20
 const dateFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 const secDateFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
-const dateTimeFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+const dateTimeFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' })
 
 type DataState = { stocks: TrackedStock[]; items: ScrapedItem[] }
 type FinvizTestResult = { status: 'success' | 'error'; data: unknown; message: string | null; code: string | null; httpStatus: number | null; responseBody: string | null }
@@ -23,7 +23,8 @@ function isSecFiling(item: ScrapedItem): boolean {
 
 function displayDate(value: string | null, includeTime = true): string {
   if (!value) return 'Date unavailable'
-  return includeTime ? dateTimeFormatter.format(new Date(value)) : dateFormatter.format(new Date(value))
+  const formatter = includeTime ? dateTimeFormatter : dateFormatter
+  return formatter.format(new Date(value))
 }
 
 function displaySecDate(value: string | null): string {
@@ -201,7 +202,15 @@ function App() {
       setTickerInput('')
       setActiveTicker(ticker)
       await loadData()
-    } catch { setError('Unable to update watchlist.') } finally { setMutatingTicker(null) }
+    } catch (error) {
+      const watchlistError = error instanceof WatchlistError ? error : null
+      const message = watchlistError
+        ? `Watchlist error: HTTP ${watchlistError.status ?? 'unknown'} — ${watchlistError.code ?? 'UNKNOWN_ERROR'} — ${watchlistError.message}`
+        : error instanceof Error
+          ? `Watchlist error: ${error.message}`
+          : 'Watchlist error: Failed to update watchlist.'
+      setError(message)
+    } finally { setMutatingTicker(null) }
   }
 
   async function removeTicker(ticker: string) {
@@ -209,7 +218,15 @@ function App() {
     setMutatingTicker(ticker)
     setError(null)
     try { await updateWatchlist('disable', ticker, session.access_token); await loadData() }
-    catch { setError('Unable to update watchlist.') }
+    catch (error) {
+      const watchlistError = error instanceof WatchlistError ? error : null
+      const message = watchlistError
+        ? `Watchlist error: HTTP ${watchlistError.status ?? 'unknown'} — ${watchlistError.code ?? 'UNKNOWN_ERROR'} — ${watchlistError.message}`
+        : error instanceof Error
+          ? `Watchlist error: ${error.message}`
+          : 'Watchlist error: Failed to update watchlist.'
+      setError(message)
+    }
     finally { setMutatingTicker(null) }
   }
 
