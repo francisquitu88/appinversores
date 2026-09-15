@@ -4,11 +4,16 @@ import { AuthView } from './components/AuthView'
 import { ApplicationShell } from './components/layout/ApplicationShell'
 import { DashboardPage } from './pages/DashboardPage'
 import { CompanyWorkspacePage } from './pages/CompanyWorkspacePage'
+import { NotificationPreferences } from './components/NotificationPreferences'
 import { supabase } from './lib/supabase'
 import { I18nProvider } from './i18n/I18nProvider'
 
 function routeFromLocation() {
-  const match = window.location.pathname.match(/^\/company\/([^/]+)\/?$/i)
+  const pathname = window.location.pathname
+  if (pathname === '/settings') {
+    return { name: 'settings' as const, ticker: null }
+  }
+  const match = pathname.match(/^\/company\/([^/]+)\/?$/i)
   return match ? { name: 'company' as const, ticker: decodeURIComponent(match[1]).toUpperCase() } : { name: 'dashboard' as const, ticker: null }
 }
 
@@ -38,7 +43,16 @@ function App() {
 
   return <I18nProvider session={session} client={authenticatedSupabase}>
     <ApplicationShell session={session} onSignOut={() => void authenticatedSupabase.auth.signOut()} onNavigate={navigate}>
-      {route.name === 'company' && route.ticker ? <CompanyWorkspacePage ticker={route.ticker} onNavigate={navigate} /> : <DashboardPage session={session} onNavigate={navigate} />}
+      {route.name === 'settings' ? (
+        <div className="settings-page">
+          <section className="page-heading simple-heading"><div><h1>Settings</h1></div></section>
+          <NotificationPreferences />
+        </div>
+      ) : route.name === 'company' && route.ticker ? (
+        <CompanyWorkspacePage ticker={route.ticker} onNavigate={navigate} />
+      ) : (
+        <DashboardPage session={session} onNavigate={navigate} />
+      )}
     </ApplicationShell>
   </I18nProvider>
 }

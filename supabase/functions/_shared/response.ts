@@ -1,7 +1,17 @@
 function headersFor(request?: Request): Record<string, string> {
-  const allowedOrigin = Deno.env.get('CORS_ORIGIN')
-  const origin = request?.headers.get('origin')
-  return { ...(allowedOrigin && origin === allowedOrigin ? { 'Access-Control-Allow-Origin': allowedOrigin, Vary: 'Origin' } : {}), 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type', 'Access-Control-Allow-Methods': 'POST, OPTIONS' }
+  const rawAllowedOrigins = Deno.env.get('CORS_ORIGIN') ?? ''
+  const allowedOrigins = rawAllowedOrigins
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+  const origin = request?.headers.get('origin') ?? ''
+  const matchingOrigin = origin && allowedOrigins.includes(origin) ? origin : null
+
+  return {
+    ...(matchingOrigin ? { 'Access-Control-Allow-Origin': matchingOrigin, Vary: 'Origin' } : {}),
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, x-notification-service-key, apikey, content-type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  }
 }
 export function jsonResponse(body: unknown, status = 200, request?: Request): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...headersFor(request), 'Content-Type': 'application/json' } })

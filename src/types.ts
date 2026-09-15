@@ -73,3 +73,45 @@ export type TickerSummary = {
   latestInsider: string | null
   lastUpdated: string | null
 }
+
+export type NotificationPreferences = {
+  id: string
+  user_id: string
+  email_enabled: boolean
+  news_enabled: boolean
+  sec_enabled: boolean
+  ratings_enabled: boolean
+  insider_trades_enabled: boolean
+  email: string
+  created_at: string
+  updated_at: string
+}
+
+export type NotificationSentLog = {
+  id: string
+  user_id: string
+  ticker: string
+  event_type: 'news' | 'sec' | 'rating' | 'insider'
+  event_id: string
+  recipient_email: string
+  subject: string
+  status: 'pending' | 'sending' | 'sent' | 'failed'
+  attempts: number
+  sent_at: string | null
+  error_message: string | null
+  created_at: string
+}
+
+export type EventNotificationPayload = {
+  user_id: string
+  ticker: string
+  event_type: 'news' | 'sec' | 'rating' | 'insider'
+  event_id: string
+  recipient_email: string
+  subject: string
+  title: string
+  content?: string | null
+  url?: string | null
+  source?: string
+  published_at?: string | null
+}

@@ -94,6 +94,26 @@
 .language-panel{width:min(100%,430px);padding:42px;background:#fff;border:1px solid #dce5e1;border-radius:12px;box-shadow:0 10px 30px rgba(21,32,29,.06)}
 .language-panel h1{margin:0 0 10px;color:#15201d;font-family:'Space Grotesk',sans-serif;font-size:40px}
 .language-question{margin:0 0 24px;color:#5d6b65;font-size:16px}
+.notification-preferences{max-width:600px;margin:0 auto;padding:24px;background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1)}
+.notification-preferences h2{margin:0 0 20px;color:#111;font-family:'Space Grotesk',sans-serif;font-size:24px}
+.error-message{background:#fee;border:1px solid #fcc;color:#c33;padding:12px 14px;border-radius:6px;margin-bottom:16px;font-size:14px}
+.success-message{background:#efe;border:1px solid #cfc;color:#3c3;padding:12px 14px;border-radius:6px;margin-bottom:16px;font-size:14px}
+.preferences-section{margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid #e0e0e0}
+.preferences-section:last-of-type{border-bottom:none;margin-bottom:0}
+.preference-group{display:flex;align-items:flex-start;gap:12px;cursor:pointer;padding:12px;border-radius:6px;transition:background 0.2s}
+.preference-group:hover{background:#f5f5f5}
+.preference-group input[type="checkbox"]{width:18px;height:18px;margin-top:2px;flex-shrink:0;cursor:pointer;accent-color:#16734a}
+.preference-label{display:flex;flex-direction:column;gap:4px;flex:1}
+.preference-label strong{color:#111;display:block;font-size:15px;font-weight:600}
+.preference-label em{color:#666;font-size:13px;font-style:normal}
+.section-title{margin:0 0 12px;color:#111;font-weight:600;font-size:14px;text-transform:uppercase;letter-spacing:0.5px}
+.preference-option{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:6px;cursor:pointer;transition:background 0.2s}
+.preference-option:hover{background:#f5f5f5}
+.preference-option input[type="checkbox"]{width:16px;height:16px;cursor:pointer;accent-color:#16734a}
+.preference-option span{color:#333;font-size:14px;font-weight:500}
+.preferences-footer{padding-top:20px;border-top:1px solid #e0e0e0;margin-top:20px}
+.info-text{margin:8px 0;color:#666;font-size:13px;line-height:1.5}
+.info-text strong{color:#111;font-weight:600}
 .language-options{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .language-options button{appearance:none;border:1px solid #b9ccc2;border-radius:8px;background:#fff;color:#15201d;padding:13px 16px;font-weight:700;cursor:pointer;transition:background-color .15s ease,border-color .15s ease,transform .15s ease}
 .language-options button:hover{background:#edf8f1;border-color:#16734a;transform:translateY(-1px)}

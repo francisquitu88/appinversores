@@ -10,6 +10,18 @@ export type AuthCheckResult =
   | { ok: false; code: 'AUTHORIZATION_REQUIRED' | 'INVALID_ACCESS_TOKEN' | 'BACKEND_CONFIG_MISSING'; message: string }
 
 function getSecretApiKey(name = 'watchlistscheduler'): string {
+  const explicitKeyNames: Record<string, string> = {
+    watchlistscheduler: 'WATCHLIST_SCHEDULER_KEY',
+  }
+
+  const explicitKeyName = explicitKeyNames[name]
+  if (explicitKeyName) {
+    const explicitKey = Deno.env.get(explicitKeyName)
+    if (typeof explicitKey === 'string' && explicitKey.length > 0) {
+      return explicitKey
+    }
+  }
+
   const rawKeys = Deno.env.get('SUPABASE_SECRET_KEYS')
   if (!rawKeys) throw new Error('BACKEND_CONFIG_MISSING')
 
@@ -23,9 +35,9 @@ function getSecretApiKey(name = 'watchlistscheduler'): string {
   }
 }
 
-export function createBackendClient() {
+export function createBackendClient(secretName: 'watchlistscheduler' | 'notificationservice' = 'watchlistscheduler') {
   const url = Deno.env.get('SUPABASE_URL')
-  const secretKey = getSecretApiKey()
+  const secretKey = getSecretApiKey(secretName)
 
   if (!url) {
     throw new Error('BACKEND_CONFIG_MISSING')

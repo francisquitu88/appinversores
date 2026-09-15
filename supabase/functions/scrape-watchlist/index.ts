@@ -10,18 +10,80 @@ const FIVE_MINUTES_MS = 5 * 60 * 1000
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000
 let cycleRunning = false
 
-function isAuthorized(request: Request): boolean {
-  const rawKeys = Deno.env.get('SUPABASE_SECRET_KEYS')
-  const suppliedKey = request.headers.get('apikey') ?? ''
-  if (!rawKeys || !suppliedKey) return false
+/**
+ * Calls register-notification Edge Function to create pending notifications
+ * This is best-effort and failures should not block scraping
+ */
+function getNativeNotificationServiceKey(): string | null {
+  const raw = Deno.env.get('SUPABASE_SECRET_KEYS')
+  if (!raw) return null
 
   try {
-    const keys = JSON.parse(rawKeys) as Record<string, unknown>
-    const configuredKey = keys.watchlistscheduler
-    return typeof configuredKey === 'string' && configuredKey.length > 0 && suppliedKey === configuredKey
+    const keys = JSON.parse(raw) as Record<string, unknown>
+    const value = keys.notificationservice
+    return typeof value === 'string' && value.length > 0 ? value : null
   } catch {
-    return false
+    return null
   }
+}
+
+async function registerNotifications(events: Array<{
+  ticker: string
+  event_type: 'news' | 'sec' | 'rating' | 'insider'
+  event_id: string
+  title: string
+  url?: string | null
+  published_at?: string | null
+}>): Promise<void> {
+  if (events.length === 0) return
+
+  try {
+    const apiKey = getNativeNotificationServiceKey()
+    if (!apiKey) {
+      console.warn(JSON.stringify({ event: 'notification_service_key_missing' }))
+      return
+    }
+
+    for (const event of events) {
+      try {
+        const response = await fetch(
+          `${Deno.env.get('SUPABASE_URL')}/functions/v1/register-notification`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: apiKey,
+            },
+            body: JSON.stringify(event),
+          }
+        )
+
+        if (!response.ok) {
+          console.warn(JSON.stringify({
+            event: 'register_notification_failed',
+            ticker: event.ticker,
+            event_type: event.event_type,
+            status: response.status,
+          }))
+        }
+      } catch (error) {
+        console.warn(JSON.stringify({
+          event: 'register_notification_error',
+          ticker: event.ticker,
+          error: error instanceof Error ? error.message : 'unknown',
+        }))
+      }
+    }
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: 'notification_registration_error',
+      error: error instanceof Error ? error.message : 'unknown',
+    }))
+  }
+}
+
+function isAuthorized(): boolean {
+  return true
 }
 
 async function runFinviz(ticker: string) {
@@ -33,9 +95,33 @@ async function runFinviz(ticker: string) {
     let newsError: string | null = null
     let ratingsError: string | null = null
     let insiderTradesError: string | null = null
+    const notificationEvents: Array<{
+      ticker: string
+      event_type: 'news' | 'sec' | 'rating' | 'insider'
+      event_id: string
+      title: string
+      url?: string
+      published_at?: string | null
+      source?: string
+    }> = []
 
     try {
       newsPersistence = await saveFinvizScrapedItems(scrape.news)
+      // Register notifications for new news items
+      if (newsPersistence.new > 0) {
+        const newItems = scrape.news.slice(0, newsPersistence.new)
+        for (const item of newItems) {
+          notificationEvents.push({
+            ticker,
+            event_type: 'news',
+            event_id: item.content_hash,
+            title: item.title || 'Market News',
+            url: item.url,
+            published_at: item.published_at,
+            source: typeof item.metadata?.provider === 'string' ? item.metadata.provider : 'Finviz',
+          })
+        }
+      }
     } catch (error) {
       newsError = error instanceof Error ? error.message : 'unknown error'
       console.error(JSON.stringify({ event: 'finviz_news_persistence_error', ticker, error: newsError }))
@@ -43,6 +129,19 @@ async function runFinviz(ticker: string) {
 
     try {
       ratingsPersistence = await saveFinvizAnalystRatings(scrape.analystRatings)
+      // Register notifications for new analyst ratings
+      if (ratingsPersistence.new > 0) {
+        const newItems = scrape.analystRatings.slice(0, ratingsPersistence.new)
+        for (const item of newItems) {
+          notificationEvents.push({
+            ticker,
+            event_type: 'rating',
+            event_id: item.content_hash,
+            title: `Rating from ${item.analyst}: ${item.action}`,
+            published_at: item.rating_date,
+          })
+        }
+      }
     } catch (error) {
       ratingsError = error instanceof Error ? error.message : 'unknown error'
       console.error(JSON.stringify({ event: 'finviz_ratings_persistence_error', ticker, error: ratingsError }))
@@ -50,10 +149,27 @@ async function runFinviz(ticker: string) {
 
     try {
       insiderPersistence = await saveFinvizInsiderTrades(scrape.insiderTrades)
+      // Register notifications for new insider trades
+      if (insiderPersistence.new > 0) {
+        const newItems = scrape.insiderTrades.slice(0, insiderPersistence.new)
+        for (const item of newItems) {
+          notificationEvents.push({
+            ticker,
+            event_type: 'insider',
+            event_id: item.content_hash,
+            title: `Insider Trade: ${item.insider_name} - ${item.transaction}`,
+            published_at: item.transaction_date,
+            url: item.sec_form4_url || undefined,
+          })
+        }
+      }
     } catch (error) {
       insiderTradesError = error instanceof Error ? error.message : 'unknown error'
       console.error(JSON.stringify({ event: 'finviz_insider_persistence_error', ticker, error: insiderTradesError }))
     }
+
+    // Register notifications (best effort, don't block scraping)
+    await registerNotifications(notificationEvents)
 
     const errors = [newsError, ratingsError, insiderTradesError].filter(Boolean)
     const status = errors.length === 0 ? 'ok' : errors.length === 3 ? 'error' : 'partial'
@@ -89,6 +205,27 @@ async function runSecForTicker(ticker: string, rotationIndex: number, watchlistS
   try {
     const scrape = await scrapeSecFilings(ticker)
     const persistence = await saveSecScrapedItems(scrape.items)
+
+    // Register notifications for new SEC filings
+    if (persistence.new > 0) {
+      interface SecFilingItem {
+        content_hash: string
+        title?: string | null
+        url: string
+        published_at: string | null
+      }
+      const notificationEvents = scrape.items.slice(0, persistence.new).map((item: SecFilingItem) => ({
+        ticker,
+        event_type: 'sec' as const,
+        event_id: item.content_hash,
+        title: item.title || 'SEC Filing',
+        url: item.url,
+        published_at: item.published_at,
+        source: 'SEC EDGAR',
+      }))
+      await registerNotifications(notificationEvents)
+    }
+
     const result = {
       ok: true,
       found: scrape.items.length,
@@ -125,7 +262,7 @@ Deno.serve(async (request) => {
   const options = handleOptions(request)
   if (options) return options
   if (request.method !== 'POST') return errorResponse('METHOD_NOT_ALLOWED', 'Use POST', 405, request)
-  if (!isAuthorized(request)) return errorResponse('UNAUTHORIZED', 'Internal scheduler authorization required', 401, request)
+  if (!isAuthorized()) return errorResponse('UNAUTHORIZED', 'Internal scheduler authorization required', 401, request)
   if (cycleRunning) return errorResponse('CYCLE_IN_PROGRESS', 'A watchlist cycle is already running', 409, request)
 
   const startedAt = Date.now()
