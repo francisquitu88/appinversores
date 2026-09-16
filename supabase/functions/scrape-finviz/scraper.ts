@@ -5,6 +5,7 @@ import { normalizeTicker } from '../_shared/scraper.ts'
 import type { Scraper, ScrapedItemDraft } from '../_shared/scraper.ts'
 
 const FINVIZ_URL = 'https://finviz.com/quote.ashx?t='
+const FINVIZ_FILINGS_URL = 'https://finviz.com/stock?t='
 const FINVIZ_TIME_ZONE = 'America/New_York'
 const FINVIZ_MAX_NEWS_ROWS = 300
 const KURA_DIRECT_FETCH_TIMEOUT_MS = 10_000
@@ -42,6 +43,17 @@ export type FinvizScrapeResult = {
   news: ScrapedItemDraft[]
   analystRatings: FinvizAnalystRatingDraft[]
   insiderTrades: FinvizInsiderTradeDraft[]
+  filings: FinvizFilingDraft[]
+}
+
+export type FinvizFilingDraft = {
+  ticker: string
+  filing_date: string
+  form: string
+  description: string
+  accession_number: string | null
+  source_url: string
+  primary_document_url: string
 }
 
 function normalizeArticleText(value: string | null | undefined): string {
@@ -218,6 +230,46 @@ function extractTableByClass(html: string, classPattern: RegExp): string | null 
 
 function parseFinvizCalendarDate(value: string): string | null {
   return parseDateContext(value)?.value ?? null
+}
+
+function normalizeAccessionNumber(value: string | null | undefined): string | null {
+  const digits = (value ?? '').replace(/-/g, '').trim()
+  if (!/^\d{1,18}$/.test(digits)) return null
+  const padded = digits.padStart(18, '0')
+  return `${padded.slice(0, 10)}-${padded.slice(10, 12)}-${padded.slice(12)}`
+}
+
+function normalizeSecUrl(value: string): string {
+  if (/^https?:\/\//i.test(value)) return value
+  return `https://www.sec.gov/Archives/edgar/data/${value.replace(/^\/+/, '')}`
+}
+
+export function extractFinvizFilings(html: string, ticker: string): FinvizFilingDraft[] {
+  const routeData = html.match(/<script\s+id=["']route-init-data["'][^>]*>([\s\S]*?)<\/script>/i)?.[1]
+  if (!routeData) return []
+
+  try {
+    const parsed = JSON.parse(routeData) as { entries?: Array<{ items?: Array<Record<string, unknown>> }> }
+    const entries = parsed.entries?.[0]?.items ?? []
+    return entries.flatMap((entry) => {
+      const filingDate = typeof entry.filingDate === 'string' ? entry.filingDate.slice(0, 10) : ''
+      const form = typeof entry.form === 'string' ? entry.form : ''
+      const primaryDocumentUrl = typeof entry.primaryDocumentUrl === 'string' ? normalizeSecUrl(entry.primaryDocumentUrl) : ''
+      const sourceUrl = typeof entry.filing === 'string' ? normalizeSecUrl(entry.filing) : primaryDocumentUrl
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(filingDate) || !form || !sourceUrl || !primaryDocumentUrl) return []
+      return [{
+        ticker,
+        filing_date: filingDate,
+        form,
+        description: typeof entry.description === 'string' ? entry.description : '',
+        accession_number: normalizeAccessionNumber(typeof entry.accessionNumber === 'string' ? entry.accessionNumber : null),
+        source_url: sourceUrl,
+        primary_document_url: primaryDocumentUrl,
+      }]
+    })
+  } catch {
+    return []
+  }
 }
 
 export function extractAnalystRatings(html: string, ticker: string, sourceId: string, scrapedAt: string): FinvizAnalystRatingDraft[] {
@@ -579,7 +631,17 @@ async function scrapeFinvizDetailed({ ticker }: { ticker: string }): Promise<Fin
       trade.content_hash = await generateIdentityHash('finviz:insider-trade', [trade.ticker, trade.insider_name, trade.relationship, trade.transaction_date, trade.transaction, trade.cost, trade.shares, trade.value, trade.shares_total, trade.sec_form4_url])
     }
 
-    return { news: dedupedItems, analystRatings, insiderTrades }
+    let filings: FinvizFilingDraft[] = []
+    try {
+      const filingsResponse = await fetch(`${FINVIZ_FILINGS_URL}${encodeURIComponent(requestedTicker)}&p=d&ty=lf`, {
+        headers: { Accept: 'text/html,application/xhtml+xml', 'Accept-Language': 'en-US,en;q=0.9', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36' },
+      })
+      if (filingsResponse.ok) filings = extractFinvizFilings(await filingsResponse.text(), requestedTicker)
+    } catch {
+      filings = []
+    }
+
+    return { news: dedupedItems, analystRatings, insiderTrades, filings }
 }
 
 export const finvizScraper: Scraper & { scrapeDetailed(input: { ticker: string }): Promise<FinvizScrapeResult> } = {

@@ -2,7 +2,7 @@ import { finvizScraper } from './scraper.ts'
 import { assertTrackedTicker, saveFinvizAnalystRatings, saveFinvizInsiderTrades, saveFinvizScrapedItems } from '../_shared/repository.ts'
 import { errorResponse, handleOptions, ok, readJson } from '../_shared/response.ts'
 import { normalizeTicker } from '../_shared/scraper.ts'
-import { requireAuthenticatedUser } from '../_shared/supabase.ts'
+import { createBackendClient, requireAuthenticatedUser } from '../_shared/supabase.ts'
 
 Deno.serve(async (request) => {
   const options = handleOptions(request); if (options) return options
@@ -25,7 +25,18 @@ Deno.serve(async (request) => {
     await assertTrackedTicker(ticker)
     console.info(JSON.stringify({ event: 'scrape_started', source: 'finviz', ticker }))
     const scrape = await finvizScraper.scrapeDetailed({ ticker }); const persistence = await saveFinvizScrapedItems(scrape.news); const ratingsPersistence = await saveFinvizAnalystRatings(scrape.analystRatings); const insiderPersistence = await saveFinvizInsiderTrades(scrape.insiderTrades)
-    const result = { source: 'finviz', ticker, found: scrape.news.length, new: persistence.new, duplicates: persistence.duplicate, updated: persistence.updated, newsFound: scrape.news.length, ratingsFound: scrape.analystRatings.length, insiderTradesFound: scrape.insiderTrades.length, newsNew: persistence.new, ratingsNew: ratingsPersistence.new, insiderTradesNew: insiderPersistence.new, ratingsDuplicate: ratingsPersistence.duplicate, insiderTradesDuplicate: insiderPersistence.duplicate, durationMs: Date.now() - startedAt }
+    const accessionNumbers = scrape.filings.map((filing) => filing.accession_number).filter((accession): accession is string => Boolean(accession))
+    const existing = accessionNumbers.length > 0
+      ? await createBackendClient().from('scraped_items').select('metadata').eq('ticker', ticker).eq('metadata->>source', 'SEC').in('metadata->>accessionNumber', accessionNumbers)
+      : { data: [], error: null }
+    if (existing.error) throw new Error(`Could not cross-check Finviz filings: ${existing.error.message}`)
+    const existingAccessions = new Set((existing.data ?? []).map((row) => row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) && typeof row.metadata.accessionNumber === 'string' ? row.metadata.accessionNumber : '').filter(Boolean))
+    const filingsCrossCheck = {
+      found: scrape.filings.length,
+      duplicates: scrape.filings.filter((filing) => filing.accession_number && existingAccessions.has(filing.accession_number)).length,
+      missingCandidates: scrape.filings.filter((filing) => filing.accession_number && !existingAccessions.has(filing.accession_number)),
+    }
+    const result = { source: 'finviz', ticker, found: scrape.news.length, new: persistence.new, duplicates: persistence.duplicate, updated: persistence.updated, newsFound: scrape.news.length, ratingsFound: scrape.analystRatings.length, insiderTradesFound: scrape.insiderTrades.length, newsNew: persistence.new, ratingsNew: ratingsPersistence.new, insiderTradesNew: insiderPersistence.new, ratingsDuplicate: ratingsPersistence.duplicate, insiderTradesDuplicate: insiderPersistence.duplicate, filingsCrossCheck, durationMs: Date.now() - startedAt }
     console.info(JSON.stringify({ event: 'scrape_finished', ...result })); return ok(result, request)
   } catch (error) { const message = error instanceof Error ? error.message : ''; console.error(JSON.stringify({ event: 'scrape_failed', source: 'finviz', durationMs: Date.now() - startedAt, error: message || 'unknown error' })); if (message === 'TICKER_NOT_TRACKED') return errorResponse('TICKER_NOT_TRACKED', 'Ticker is not enabled in tracked_stocks', 404, request); if (message.includes('timed out')) return errorResponse('FIRECRAWL_TIMEOUT', 'The scraping provider timed out', 504, request); if (message.startsWith('Firecrawl')) return errorResponse('FIRECRAWL_ERROR', 'The scraping provider failed', 502, request); return errorResponse('SCRAPER_ERROR', 'Finviz scraper failed', 500, request) }
 })
