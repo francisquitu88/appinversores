@@ -5,7 +5,8 @@ import { getCompanyData, type CompanyData } from '../lib/queries/company'
 import { IntelligenceView } from '../components/intelligence/IntelligenceView'
 import { useI18n } from '../i18n/useI18n'
 
-function lastUpdated(data: CompanyData) { const dates = [...data.items.map((item) => new Date(item.published_at ?? item.scraped_at).getTime()), ...data.ratings.map((item) => new Date(`${item.rating_date.slice(0, 10)}T00:00:00Z`).getTime()), ...data.insiderTrades.map((item) => new Date(`${item.transaction_date.slice(0, 10)}T00:00:00Z`).getTime())]; const value = Math.max(...dates, 0); return value ? new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'America/New_York' }).format(new Date(value)) : 'No data' }
+function calendarDateTimestamp(value: string) { const [year, month, day] = value.slice(0, 10).split('-').map(Number); return Date.UTC(year, month - 1, day, 12) }
+function lastUpdated(data: CompanyData) { const dates = [...data.items.map((item) => new Date(item.published_at ?? item.scraped_at).getTime()), ...data.ratings.map((item) => calendarDateTimestamp(item.rating_date)), ...data.insiderTrades.map((item) => calendarDateTimestamp(item.transaction_date))]; const value = Math.max(...dates, 0); return value ? new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'America/New_York' }).format(new Date(value)) : 'No data' }
 
 export function CompanyWorkspacePage({ ticker, onNavigate }: { ticker: string; onNavigate: (path: string) => void }) {
   const { t } = useI18n()

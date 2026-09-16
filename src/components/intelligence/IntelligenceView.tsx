@@ -3,10 +3,12 @@ import type { FinvizAnalystRating, FinvizInsiderTrade, ScrapedItem } from '../..
 import { useI18n } from '../../i18n/useI18n'
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/New_York' })
+const calendarDateFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
 
 function isSec(item: ScrapedItem) { return item.metadata.source === 'SEC' || typeof item.metadata.accessionNumber === 'string' }
 function itemDate(item: ScrapedItem) { return new Date(item.published_at ?? item.scraped_at).getTime() }
-function date(value: string | null) { return value ? dateFormatter.format(new Date(`${value.slice(0, 10)}T00:00:00Z`)) : 'Date unavailable' }
+function calendarDateTimestamp(value: string) { const [year, month, day] = value.slice(0, 10).split('-').map(Number); return Date.UTC(year, month - 1, day, 12) }
+function date(value: string | null) { return value ? calendarDateFormatter.format(new Date(calendarDateTimestamp(value))) : 'Date unavailable' }
 function form(item: ScrapedItem) { return typeof item.metadata.form === 'string' ? item.metadata.form : 'SEC filing' }
 
 type Activity = {
@@ -27,8 +29,8 @@ export function IntelligenceView({ items, ratings, insiderTrades }: { items: Scr
   const activity: Activity[] = [
     ...news.map((item) => ({ key: `news-${item.id}`, kind: 'NEWS' as const, date: itemDate(item), title: item.title ?? 'Untitled news', meta: typeof item.metadata.provider === 'string' ? item.metadata.provider : 'FINVIZ', url: item.url })),
     ...sec.map((item) => ({ key: `sec-${item.id}`, kind: 'SEC' as const, date: itemDate(item), title: item.title ?? `${form(item)} filing`, meta: form(item), url: item.url })),
-    ...ratings.map((item) => ({ key: `rating-${item.id}`, kind: 'RATING' as const, date: new Date(`${item.rating_date.slice(0, 10)}T00:00:00Z`).getTime(), title: `${item.action} - ${item.analyst}`, meta: item.rating_change || 'Analyst update', url: null })),
-    ...insiderTrades.map((item) => ({ key: `insider-${item.id}`, kind: 'INSIDER' as const, date: new Date(`${item.transaction_date.slice(0, 10)}T00:00:00Z`).getTime(), title: `${item.transaction} - ${item.insider_name}`, meta: item.relationship, url: item.sec_form4_url })),
+    ...ratings.map((item) => ({ key: `rating-${item.id}`, kind: 'RATING' as const, date: calendarDateTimestamp(item.rating_date), title: `${item.action} - ${item.analyst}`, meta: item.rating_change || 'Analyst update', url: null })),
+    ...insiderTrades.map((item) => ({ key: `insider-${item.id}`, kind: 'INSIDER' as const, date: calendarDateTimestamp(item.transaction_date), title: `${item.transaction} - ${item.insider_name}`, meta: item.relationship, url: item.sec_form4_url })),
   ].sort((a, b) => b.date - a.date)
 
   return <div className="intelligence-grid">
