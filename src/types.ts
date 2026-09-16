@@ -69,9 +69,9 @@ export type TickerSummary = {
   totalRatings: number
   totalInsiders: number
   latestNews: string | null
+  latestFiling: string | null
   latestRating: string | null
   latestInsider: string | null
-  lastUpdated: string | null
 }
 
 export type NotificationPreferences = {
